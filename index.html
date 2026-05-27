@@ -14,6 +14,7 @@
 <script src="https://unpkg.com/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
   if (window.pdfjsLib) {
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -80,7 +81,17 @@ body{transition:background .2s,color .2s;}
          Access-Control-Allow-Headers: Content-Type
        and reply to an OPTIONS preflight with HTTP 204.
    ============================================================ */
-const WORKER_URL = "https://hidden-moon-64a4.steven4team.workers.dev";   // ← paste your Worker URL here
+const WORKER_URL = "https://hidden-moon-64a4.steven4team.workers.dev";   // ← your Cloudflare Worker
+
+/* ============================================================
+   SUPABASE — accounts + cloud sync
+   These two values are safe to expose (the anon key is designed
+   for client code; Row Level Security protects each user's rows).
+   ============================================================ */
+const SUPABASE_URL = "https://dqyyqblvkfemfqqylarl.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxeXlxYmx2a2ZlbWZxcXlsYXJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4NDIxNzksImV4cCI6MjA5NTQxODE3OX0.qyOHEXXPxSU8DONUN0CKtIZiN0U71QG9gUjeGudvIQM";
+const SUPABASE_ENABLED = !!(window.supabase && SUPABASE_URL && SUPABASE_ANON_KEY && !/YOUR-/.test(SUPABASE_URL));
+const sb = SUPABASE_ENABLED ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
@@ -193,6 +204,96 @@ window.storage = (function () {
   };
 })();
 
+/* ============================================================
+   ACCOUNT-AWARE STORAGE
+   `localStore` (above) is the on-device IndexedDB store.
+   `window.storage` wraps it: when a user is signed in, the four
+   app keys (decks/log/settings/stats) read/write a single cloud
+   row in Supabase so data follows the account across devices;
+   when signed out it uses the device store as before. Everything
+   else (userId, usage, etc.) always stays on-device.
+   The rest of the app calls window.storage.get/set unchanged.
+   ============================================================ */
+const localStore = window.storage;
+const CLOUD_KEYS = new Set(["decks", "log", "settings", "stats"]);
+const accountStore = (function () {
+  let user = null;          // current Supabase user (or null)
+  let cache = null;         // in-memory copy of the cloud row's data object
+  let loaded = false;
+  let saveTimer = null;
+
+  async function loadCloud() {
+    if (!user || !sb) { cache = null; loaded = false; return; }
+    try {
+      const { data, error } = await sb.from("user_data").select("data").eq("user_id", user.id).maybeSingle();
+      if (error) throw error;
+      cache = (data && data.data) ? data.data : {};
+      loaded = true;
+    } catch (e) { cache = cache || {}; loaded = true; }
+  }
+  async function flush() {
+    if (!user || !sb || !cache) return;
+    try { await sb.from("user_data").upsert({ user_id: user.id, data: cache, updated_at: new Date().toISOString() }); }
+    catch (e) {}
+  }
+  function scheduleFlush() { clearTimeout(saveTimer); saveTimer = setTimeout(flush, 400); }
+
+  return {
+    // called by the auth layer when sign-in state changes
+    async setUser(u) {
+      user = u;
+      cache = null; loaded = false;
+      clearTimeout(saveTimer);
+      if (user) await loadCloud();
+    },
+    isCloud() { return !!user && !!sb; },
+    currentUser() { return user; },
+    // push the device's existing data up to a fresh/empty cloud account (one-time migration)
+    async seedFromLocal() {
+      if (!user || !sb) return false;
+      await loadCloud();
+      const has = cache && Object.keys(cache).length > 0 && (cache.decks || cache.log);
+      if (has) return false; // cloud already has data — don't clobber it
+      const next = {};
+      for (const k of CLOUD_KEYS) {
+        const v = await localStore.get(k);
+        if (v && v.value != null) next[k] = v.value;
+      }
+      if (Object.keys(next).length) { cache = next; await flush(); return true; }
+      cache = cache || {};
+      return false;
+    },
+    async get(key) {
+      if (this.isCloud() && CLOUD_KEYS.has(key)) {
+        if (!loaded) await loadCloud();
+        const v = cache ? cache[key] : null;
+        return v == null ? null : { value: v };
+      }
+      return localStore.get(key);
+    },
+    async set(key, value) {
+      if (this.isCloud() && CLOUD_KEYS.has(key)) {
+        if (!loaded) await loadCloud();
+        cache = cache || {};
+        cache[key] = value;
+        scheduleFlush();
+        return { ok: true };
+      }
+      return localStore.set(key, value);
+    },
+    async remove(key) {
+      if (this.isCloud() && CLOUD_KEYS.has(key)) {
+        if (cache) { delete cache[key]; scheduleFlush(); }
+        return { ok: true };
+      }
+      return localStore.remove(key);
+    },
+    flushNow: flush,
+  };
+})();
+window.storage = accountStore;
+
+
 /* =====================================================================
    Kioku — AI-powered spaced repetition (enhanced)
    ===================================================================== */
@@ -203,7 +304,8 @@ window.storage = (function () {
 const MIN = 60 * 1000, DAY = 24 * 60 * MIN;
 const LEARN_STEPS_SEC = [60, 300, 600];
 const RELEARN_STEPS_SEC = [600];
-const EASY_INTERVAL = 4;
+const EASY_INTERVAL = 4;          // days — new card graduated with Easy (Anki default)
+const GRADUATING_INTERVAL = 2;    // days — new card graduated with Good (Anki uses 1; 2 is a gentle middle)
 const DESIRED_RETENTION = 0.9;
 
 const FSRS_W = [0.40255, 1.18385, 3.173, 15.69105, 7.1949, 0.5345, 1.4604, 0.0046,
@@ -257,7 +359,11 @@ function learningOutcomes(card, steps, isRelearn) {
       const s = card.stability || fsrsInitS(3), d = card.difficulty || fsrsInitD(3), ivl = fsrsInterval(s);
       out[2] = { ms: ivl * DAY, next: { phase: "review", stability: s, difficulty: d, interval: ivl } };
     } else {
-      const s = fsrsInitS(3), d = fsrsInitD(3), ivl = fsrsInterval(s);
+      // Good graduates a NEW card like Anki's graduating interval (a day or two),
+      // not the larger raw FSRS initial stability — keeps the first jump believable.
+      const d = fsrsInitD(3);
+      const s = Math.min(fsrsInitS(3), GRADUATING_INTERVAL);
+      const ivl = Math.max(1, Math.min(GRADUATING_INTERVAL, fsrsInterval(fsrsInitS(3))));
       out[2] = { ms: ivl * DAY, next: { phase: "review", stability: s, difficulty: d, interval: ivl } };
     }
   } else {
@@ -269,8 +375,12 @@ function learningOutcomes(card, steps, isRelearn) {
     const ie = Math.max(EASY_INTERVAL, fsrsInterval(s));
     out[3] = { ms: ie * DAY, next: { phase: "review", stability: s, difficulty: d, interval: ie } };
   } else {
-    const se = fsrsInitS(4), de = fsrsInitD(4), ie = Math.max(EASY_INTERVAL, fsrsInterval(se));
-    out[3] = { ms: ie * DAY, next: { phase: "review", stability: se, difficulty: de, interval: ie } };
+    // Easy graduates a NEW card to a fixed, believable interval (Anki default = 4d)
+    // instead of FSRS's ~16d initial-Easy stability. Stability is set to match, so
+    // the next interval grows naturally from 4 days rather than snapping back up.
+    const de = fsrsInitD(4);
+    const ie = EASY_INTERVAL;
+    out[3] = { ms: ie * DAY, next: { phase: "review", stability: ie, difficulty: de, interval: ie } };
   }
   return out;
 }
@@ -915,6 +1025,183 @@ function clozeExpectedAnswer(card) {
 function clozeQuestion(text) { const n = clozeNumbers(text); return renderCloze(text, n[0] || 1, false); }
 function clozeAnswer(text)   { const n = clozeNumbers(text); return renderCloze(text, n[0] || 1, true); }
 
+/* ============================================================
+   TOKEN USAGE TRACKING + DAILY LIMIT
+   Tracks Claude (Haiku 4.5) token usage per day and enforces a
+   daily cap. Two layers:
+     • Client (here): counts real tokens from each response's
+       `usage` object, shows a live meter, self-enforces the cap.
+       Accurate per response, but per-device and bypassable.
+     • Server (your Worker + Cloudflare KV): the authoritative,
+       tamper-proof enforcement. When the Worker returns
+       X-Usage-Today / X-Usage-Limit headers, the client trusts
+       those over its local count. See the Worker code in the
+       comment at the bottom of this file.
+   "User" without a login system = one anonymous id per browser.
+   Real per-account limits across devices need real auth.
+   ============================================================ */
+const DAILY_TOKEN_LIMIT = 1000000; // Haiku 4.5 tokens per user per day
+
+// Id sent to the Worker so it can meter tokens per user. When signed in we use
+// the real account id (so the limit follows the account across devices); when
+// signed out, a stable anonymous per-browser id.
+let USER_ID = null;
+async function getUserId() {
+  // signed-in account id takes priority — this is what makes limits per-account
+  try {
+    const au = authManager && authManager.get && authManager.get().user;
+    if (au && au.id) return "acct_" + au.id;
+  } catch (e) {}
+  if (USER_ID) return USER_ID;
+  try { const v = await window.storage.get("userId"); if (v && v.value) { USER_ID = v.value; return USER_ID; } } catch (e) {}
+  USER_ID = (window.crypto && crypto.randomUUID) ? "u_" + crypto.randomUUID() : "u_" + uid() + uid() + uid();
+  try { await window.storage.set("userId", USER_ID); } catch (e) {}
+  return USER_ID;
+}
+
+const usageTracker = (function () {
+  let state = { date: todayKey(), tokens: 0, limit: DAILY_TOKEN_LIMIT, serverEnforced: false, history: {} };
+  let loaded = false;
+  const subs = new Set();
+  const emit = () => subs.forEach((fn) => { try { fn(getState()); } catch (e) {} });
+
+  function rollIfNeeded() {
+    const t = todayKey();
+    if (state.date !== t) { state.date = t; state.tokens = 0; }
+  }
+  function getState() { rollIfNeeded(); return { ...state, remaining: Math.max(0, state.limit - state.tokens), over: state.tokens >= state.limit }; }
+  async function persist() {
+    try {
+      // keep ~30 days of history for the usage display, trimmed
+      const hist = state.history || {};
+      const keys = Object.keys(hist).sort();
+      while (keys.length > 35) delete hist[keys.shift()];
+      await window.storage.set("usage", JSON.stringify({ date: state.date, tokens: state.tokens, history: hist }));
+    } catch (e) {}
+  }
+
+  return {
+    async init() {
+      if (loaded) return getState();
+      try {
+        const v = await window.storage.get("usage");
+        if (v && v.value) {
+          const p = JSON.parse(v.value);
+          state.history = p.history || {};
+          if (p.date === todayKey()) state.tokens = p.tokens || 0;
+          else state.tokens = 0;
+        }
+      } catch (e) {}
+      loaded = true; emit();
+      return getState();
+    },
+    get: getState,
+    // accurate token count taken from a response's usage object (client estimate)
+    addLocal(tokens) {
+      rollIfNeeded();
+      if (state.serverEnforced) return; // server is authoritative; don't double count
+      state.tokens += tokens;
+      state.history[state.date] = state.tokens;
+      persist(); emit();
+    },
+    // authoritative cumulative total reported by the Worker
+    setFromServer(today, limit) {
+      state.date = todayKey();
+      state.tokens = today;
+      if (limit) state.limit = limit;
+      state.serverEnforced = true;
+      state.history[state.date] = today;
+      persist(); emit();
+    },
+    subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
+  };
+})();
+
+// React hook for live usage display
+function useUsage() {
+  const [u, setU] = useState(() => usageTracker.get());
+  useEffect(() => {
+    let mounted = true;
+    usageTracker.init().then((s) => { if (mounted) setU(s); });
+    const unsub = usageTracker.subscribe((s) => { if (mounted) setU(s); });
+    return () => { mounted = false; unsub(); };
+  }, []);
+  return u;
+}
+
+/* ============================================================
+   AUTH — Supabase accounts. Keeps the account-aware storage in
+   sync with the signed-in user, and exposes simple helpers.
+   ============================================================ */
+const authManager = (function () {
+  let user = null;
+  let ready = false;
+  const subs = new Set();
+  const emit = () => subs.forEach((fn) => { try { fn({ user, ready }); } catch (e) {} });
+
+  async function apply(sessionUser) {
+    user = sessionUser || null;
+    await accountStore.setUser(user);
+    if (user) {
+      // first login on this account: lift any device decks into the cloud once
+      try { await accountStore.seedFromLocal(); } catch (e) {}
+      try { await getUserId(); } catch (e) {}
+    }
+    ready = true; emit();
+  }
+
+  return {
+    async init() {
+      if (!sb) { ready = true; emit(); return; }
+      try {
+        const { data } = await sb.auth.getSession();
+        await apply(data && data.session ? data.session.user : null);
+      } catch (e) { ready = true; emit(); }
+      sb.auth.onAuthStateChange((_event, session) => { apply(session ? session.user : null); });
+    },
+    get() { return { user, ready }; },
+    subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
+    async signUpEmail(email, password) {
+      if (!sb) throw new Error("Accounts aren't available.");
+      const { data, error } = await sb.auth.signUp({ email, password });
+      if (error) throw error;
+      return data;
+    },
+    async signInEmail(email, password) {
+      if (!sb) throw new Error("Accounts aren't available.");
+      const { data, error } = await sb.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      return data;
+    },
+    async signInOAuth(provider) {
+      if (!sb) throw new Error("Accounts aren't available.");
+      const { error } = await sb.auth.signInWithOAuth({ provider, options: { redirectTo: window.location.href.split("#")[0] } });
+      if (error) throw error;
+    },
+    async signOut() {
+      if (!sb) return;
+      try { await accountStore.flushNow(); } catch (e) {}
+      await sb.auth.signOut();
+    },
+  };
+})();
+
+function useAuth() {
+  const [st, setSt] = useState(() => authManager.get());
+  useEffect(() => {
+    const unsub = authManager.subscribe(setSt);
+    return () => unsub();
+  }, []);
+  return st;
+}
+
+// Error thrown when the daily token cap is reached — callers show a friendly message.
+function DailyLimitError() {
+  const e = new Error("Daily token limit reached. It resets tomorrow.");
+  e.code = "DAILY_LIMIT";
+  return e;
+}
+
 /* ---- AI (via your Cloudflare Worker) ----
    callAI(prompt)              -> returns the text (back-compat)
    callAIDetailed(prompt,opts) -> { text, stopReason, truncated }
@@ -933,6 +1220,11 @@ async function callAIDetailed(prompt, opts = {}) {
     throw new Error('AI isn\u2019t connected yet. Open this file and set WORKER_URL (near the top) to your Cloudflare Worker URL.');
   }
 
+  // pre-check the daily cap so we don't even make a doomed request
+  await usageTracker.init();
+  if (usageTracker.get().over) throw DailyLimitError();
+  const userId = await getUserId();
+
   let lastErr = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
     const ctrl = new AbortController();
@@ -941,9 +1233,16 @@ async function callAIDetailed(prompt, opts = {}) {
       const res = await fetch(WORKER_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, maxTokens }),
+        body: JSON.stringify({ prompt, maxTokens, userId }),
         signal: ctrl.signal,
       });
+
+      // server-enforced limit: surface usage + stop without retrying
+      const limitHit = res.headers.get("X-Limit-Reached");
+      const sToday = res.headers.get("X-Usage-Today");
+      const sLimit = res.headers.get("X-Usage-Limit");
+      if (sToday != null) usageTracker.setFromServer(parseInt(sToday, 10) || 0, parseInt(sLimit, 10) || 0);
+      if (res.status === 429 && limitHit) throw DailyLimitError();
 
       let data = null;
       try { data = await res.json(); } catch { data = null; }
@@ -961,6 +1260,11 @@ async function callAIDetailed(prompt, opts = {}) {
       }
       if (!data) throw new Error("The Worker returned an unreadable response.");
 
+      // count tokens locally if the server didn't already report an authoritative total
+      if (sToday == null && data.usage) {
+        usageTracker.addLocal((data.usage.input_tokens || 0) + (data.usage.output_tokens || 0));
+      }
+
       const text = (data.content || [])
         .filter((b) => b && b.type === "text")
         .map((b) => b.text)
@@ -972,6 +1276,7 @@ async function callAIDetailed(prompt, opts = {}) {
 
       return { text, stopReason, truncated: stopReason === "max_tokens" };
     } catch (e) {
+      if (e && e.code === "DAILY_LIMIT") throw e; // never retry a limit
       lastErr = e;
       // network/abort/CORS: retry a couple of times before giving up
       if (attempt < retries) { await new Promise((r) => setTimeout(r, 700 * (attempt + 1))); continue; }
@@ -1189,6 +1494,97 @@ function makeCards(spec) {
 }
 
 /* =========================== APP =========================== */
+/* ---------------- ACCOUNT (login / signup / profile) ---------------- */
+function AccountScreen({ user, onBack }) {
+  const [mode, setMode] = useState("signin"); // "signin" | "signup"
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  const submit = async () => {
+    setErr(""); setMsg("");
+    if (!email.trim() || !pw) { setErr("Enter your email and a password."); return; }
+    if (mode === "signup" && pw.length < 6) { setErr("Password must be at least 6 characters."); return; }
+    setBusy(true);
+    try {
+      if (mode === "signup") {
+        const r = await authManager.signUpEmail(email.trim(), pw);
+        // if email confirmation is on, there's no session yet
+        if (r && r.user && !r.session) setMsg("Account created. Check your email to confirm, then sign in.");
+        else setMsg("Account created — you're signed in.");
+      } else {
+        await authManager.signInEmail(email.trim(), pw);
+      }
+    } catch (e) {
+      setErr(e && e.message ? e.message : "Something went wrong. Try again.");
+    }
+    setBusy(false);
+  };
+
+  const oauth = async (provider) => {
+    setErr("");
+    try { await authManager.signInOAuth(provider); }
+    catch (e) { setErr((e && e.message) || "Couldn't start sign-in."); }
+  };
+
+  if (user) {
+    return (
+      <div className="fade">
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+          <button className="ghost" onClick={onBack}>← Back</button>
+          <h1 style={S.h1}>Account</h1>
+        </div>
+        <div style={S.panelBox}>
+          <div style={S.panelTitle}>Signed in</div>
+          <p style={{ ...S.sub, marginTop: 0 }}>{user.email || user.id}</p>
+          <p style={S.hint}>Your decks, stats, and AI usage sync to this account and follow you across devices.</p>
+          <button className="ghost" style={{ marginTop: 10 }} onClick={() => authManager.signOut()}>Sign out</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fade">
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+        <button className="ghost" onClick={onBack}>← Back</button>
+        <h1 style={S.h1}>{mode === "signup" ? "Create account" : "Sign in"}</h1>
+      </div>
+      <p style={S.sub}>Save your decks to the cloud and sync across devices.</p>
+
+      <div style={{ ...S.panelBox, maxWidth: 420 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <button className="ghost" style={{ flex: 1 }} onClick={() => oauth("google")}>Continue with Google</button>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <button className="ghost" style={{ flex: 1 }} onClick={() => oauth("github")}>Continue with GitHub</button>
+        </div>
+        <div style={{ textAlign: "center", color: "var(--muted3)", fontSize: 12, margin: "6px 0 14px" }}>or use email</div>
+
+        <input className="ta" type="email" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} style={{ marginBottom: 8 }} />
+        <input className="ta" type="password" placeholder="password" value={pw} onChange={(e) => setPw(e.target.value)}
+               onKeyDown={(e) => { if (e.key === "Enter") submit(); }} style={{ marginBottom: 12 }} />
+
+        {err && <div style={S.errorBox}>{err}</div>}
+        {msg && <div style={{ ...S.errorBox, background: "var(--success-bg)", borderColor: "var(--success-border)", color: "var(--success-text)" }}>{msg}</div>}
+
+        <button className="primary" style={{ width: "100%" }} disabled={busy} onClick={submit}>
+          {busy ? "Working…" : (mode === "signup" ? "Create account" : "Sign in")}
+        </button>
+
+        <div style={{ textAlign: "center", marginTop: 12, fontSize: 13 }}>
+          {mode === "signup"
+            ? <span style={S.hint}>Already have an account? <button className="linklike" onClick={() => { setMode("signin"); setErr(""); setMsg(""); }}>Sign in</button></span>
+            : <span style={S.hint}>New here? <button className="linklike" onClick={() => { setMode("signup"); setErr(""); setMsg(""); }}>Create an account</button></span>}
+        </div>
+      </div>
+      <p style={S.hint}>Google/GitHub buttons work once you enable those providers in Supabase. Email works right away.</p>
+    </div>
+  );
+}
+
 function App() {
   const [decks, setDecks] = useState({});
   const [log, setLog] = useState([]);
@@ -1201,20 +1597,35 @@ function App() {
   const [view, setView] = useState("home");
   const [activeId, setActiveId] = useState(null);
   const [studyMode, setStudyMode] = useState("due");
+  const { user, ready: authReady } = useAuth();
 
   const persistWarned = useRef(false);
 
+  // initialize auth once on mount
+  useEffect(() => { authManager.init(); }, []);
+
+  // (re)load all data whenever auth becomes ready or the signed-in user changes.
+  // Reset to defaults first so signing out doesn't leak the previous account's data.
   useEffect(() => {
+    if (!authReady) return;
+    let alive = true;
     (async () => {
+      setLoaded(false);
       try {
-        const d = await window.storage.get("decks"); if (d && d.value) setDecks(JSON.parse(d.value));
-        const l = await window.storage.get("log"); if (l && l.value) setLog(JSON.parse(l.value));
-        const s = await window.storage.get("settings"); if (s && s.value) setSettings((cur) => ({ ...cur, ...JSON.parse(s.value) }));
-        const st = await window.storage.get("stats"); if (st && st.value) setStats((cur) => ({ ...cur, ...JSON.parse(st.value) }));
+        const d = await window.storage.get("decks");
+        const l = await window.storage.get("log");
+        const s = await window.storage.get("settings");
+        const st = await window.storage.get("stats");
+        if (!alive) return;
+        setDecks(d && d.value ? JSON.parse(d.value) : {});
+        setLog(l && l.value ? JSON.parse(l.value) : []);
+        setSettings((cur) => ({ dailyGoal: 20, newPerDay: 20, darkMode: cur.darkMode, ttsAuto: false, typeAnswer: false, soundOn: true, ttsVoice: "", ttsStyle: "natural", ...(s && s.value ? JSON.parse(s.value) : {}) }));
+        setStats({ xp: 0, achievements: [], freezesUsed: 0, freezesUsedAt: [], importedPdf: false, importedImage: false, tutorUses: 0, bestExamPct: 0, examAce: false, freezeRefillMonth: "", ...(st && st.value ? JSON.parse(st.value) : {}) });
       } catch (e) {}
-      setLoaded(true);
+      if (alive) setLoaded(true);
     })();
-  }, []);
+    return () => { alive = false; };
+  }, [authReady, user ? user.id : null]);
 
   // apply theme
   useEffect(() => {
@@ -1246,27 +1657,36 @@ function App() {
     // eslint-disable-next-line
   }, [loaded]);
 
-  // ---- streak freeze auto-apply: if yesterday had 0 reviews but today already does
-  //      OR you opened the app and yesterday is missing, spend a freeze
-  //      to cover yesterday (up to 2/month). Subtle, loss-aversion-friendly.
+  // ---- streak freeze auto-apply ----
+  //  Only spend a freeze when yesterday is a genuine ONE-DAY gap inside an
+  //  active streak: the day before yesterday had real reviews, yesterday had
+  //  none, and today does. Without the "day-before" check it would waste a
+  //  freeze (and show an alarming toast) for new users or anyone whose last
+  //  session was days ago — there's no streak to protect in those cases.
   useEffect(() => {
     if (!loaded) return;
     const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+    const dayBefore = new Date(); dayBefore.setDate(dayBefore.getDate() - 2);
     const yKey = todayKey(yesterday);
+    const dbKey = todayKey(dayBefore);
     const todayK = todayKey();
-    const yReviews = log.filter((e) => todayKey(new Date(e.t)) === yKey).length;
-    const tReviews = log.filter((e) => todayKey(new Date(e.t)) === todayK).length;
+    const real = (e) => !e.freeze; // count only genuine reviews, not prior freezes
+    const yReviews = log.filter((e) => real(e) && todayKey(new Date(e.t)) === yKey).length;
+    const tReviews = log.filter((e) => real(e) && todayKey(new Date(e.t)) === todayK).length;
+    // an active streak only exists if the day before yesterday was studied
+    // (or already covered by a freeze)
+    const dbActive = log.some((e) => todayKey(new Date(e.t)) === dbKey);
     const alreadyFroze = stats.freezesUsedAt && stats.freezesUsedAt.includes(yKey);
     const curLevel = xpToLevel(totalXpFromLog(log.filter((e) => !e.freeze))).lvl;
     const maxFreezes = freezesPerMonth(curLevel);
     const freezesLeft = maxFreezes - (stats.freezesUsed || 0);
-    if (yReviews === 0 && tReviews > 0 && !alreadyFroze && freezesLeft > 0) {
+    if (dbActive && yReviews === 0 && tReviews > 0 && !alreadyFroze && freezesLeft > 0) {
       // synthesize a tiny "freeze" log entry on yesterday so the streak counter
       // (which uses days from the log) treats yesterday as active
       const freezeEntry = { t: new Date(yesterday.setHours(12, 0, 0, 0)).getTime(), cardId: "__freeze", deckId: "__freeze", q: 2, ms: 0, freeze: true };
       persist(null, [...log, freezeEntry].sort((a, b) => a.t - b.t));
       persistStats({ ...stats, freezesUsed: (stats.freezesUsed || 0) + 1, freezesUsedAt: [...(stats.freezesUsedAt || []), yKey] });
-      toast({ icon: "🧊", title: "Streak freeze used", body: `Yesterday was skipped — streak safe (${maxFreezes}/month)`, tone: "gold", ms: 5000 });
+      toast({ icon: "🧊", title: "Streak freeze used", body: `Yesterday was skipped — streak safe (${freezesLeft - 1} of ${maxFreezes} left this month)`, tone: "gold", ms: 5000 });
     }
     // eslint-disable-next-line
   }, [loaded]);
@@ -1404,6 +1824,11 @@ function App() {
             <DailyChip done={todayReviews} goal={settings.dailyGoal} />
             <LevelChip level={levelInfo.lvl} xp={levelInfo.intoLevel} next={levelInfo.levelNeeds} />
             <StreakChip streak={liveStats.streak} freezesLeft={freezesPerMonth(levelInfo.lvl) - (stats.freezesUsed || 0)} maxFreezes={freezesPerMonth(levelInfo.lvl)} />
+            {SUPABASE_ENABLED && (
+              <button className="icon" title={user ? "Account" : "Sign in"} onClick={() => setView("account")}>
+                {user ? "👤" : "Sign in"}
+              </button>
+            )}
             <button className="icon" title="Settings" onClick={() => setView("settings")}>⚙</button>
           </div>
         </header>
@@ -1434,6 +1859,8 @@ function App() {
         ) : view === "settings" ? (
           <Settings settings={settings} onSave={persistSettings} onBack={() => setView("home")} decks={decks} log={log} stats={stats}
                     onClearLog={() => { persist(null, []); }} onResetStats={() => { persistStats({ ...stats, achievements: [] }); }} />
+        ) : view === "account" ? (
+          <AccountScreen user={user} onBack={() => setView("home")} />
         ) : view === "edit" ? (
           decks[activeId]
             ? <Editor key={activeId} deck={decks[activeId]} onSave={saveDeck} onStudy={(mode) => openStudy(activeId, mode)} />
@@ -2992,6 +3419,7 @@ function Dashboard({ decks, log, settings, stats, levelInfo, liveStats }) {
   const allCards = useMemo(() => { const o = []; Object.values(decks).forEach((d) => d.cards.forEach((c) => o.push({ ...c, deckId: d.id }))); return o; }, [decks]);
   const now = Date.now();
   const cleanLog = useMemo(() => log.filter((e) => !e.freeze), [log]);
+  const [activityRange, setActivityRange] = useState(365); // days shown in the heatmap
 
   // forecast
   const forecast = new Array(14).fill(0);
@@ -3035,11 +3463,11 @@ function Dashboard({ decks, log, settings, stats, levelInfo, liveStats }) {
     const avgSec = det.n ? Math.round(det.totalMs / det.n / 100) / 10 : null;
     year.push({ k, n: det.n, date: d, again: det.again, hard: det.hard, good: det.good, easy: det.easy, retention, avgSec, deckCount: det.decks.size });
   }
-  const maxYr = Math.max(1, ...year.map((h) => h.n));
-
-  // 30-day activity
-  const heat = year.slice(-30);
-  const maxH = Math.max(1, ...heat.map((h) => h.n));
+  // the heatmap shows the most recent `activityRange` days
+  const activityCells = year.slice(-activityRange);
+  const activityMax = Math.max(1, ...activityCells.map((h) => h.n));
+  const activityReviews = activityCells.reduce((s, h) => s + h.n, 0);
+  const activityActiveDays = activityCells.filter((h) => h.n > 0).length;
 
   // hardest cards (by lapses, then by recent fail rate)
   const cardReviews = {};
@@ -3078,9 +3506,18 @@ function Dashboard({ decks, log, settings, stats, levelInfo, liveStats }) {
       </div>
 
       <div style={S.panelBox}>
-        <div style={S.panelTitle}>Activity — last 365 days</div>
-        <HeatmapYear year={year} maxYr={maxYr} />
-        <div style={{ ...S.hint, marginTop: 8 }}>Hover any square for that day's exact review count and breakdown.</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+          <div style={{ ...S.panelTitle, marginBottom: 0 }}>Activity — last {activityRange} {activityRange === 1 ? "day" : "days"}</div>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            {[365, 180, 60, 30, 7].map((r) => (
+              <button key={r} className={"range-tab" + (activityRange === r ? " on" : "")} onClick={() => setActivityRange(r)}>{r}</button>
+            ))}
+          </div>
+        </div>
+        <HeatmapYear year={activityCells} maxYr={activityMax} />
+        <div style={{ ...S.hint, marginTop: 8 }}>
+          {activityReviews} review{activityReviews === 1 ? "" : "s"} over {activityActiveDays} active {activityActiveDays === 1 ? "day" : "days"} · hover any square for that day's breakdown.
+        </div>
       </div>
 
       <div style={S.panelBox}>
@@ -3184,10 +3621,11 @@ function HeatmapYear({ year, maxYr }) {
   };
   const onLeave = () => setHov(null);
   const fmtDate = (d) => d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  const cols = Math.max(1, Math.ceil(year.length / 7)); // 7 rows (days of week), columns = weeks shown
 
   return (
     <div ref={wrapRef} style={{ position: "relative" }}>
-      <div style={S.yearWrap}>
+      <div style={{ ...S.yearWrap, gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
         {year.map((h) => (
           <div key={h.k}
                onMouseEnter={(ev) => onEnter(h, ev)}
@@ -3352,6 +3790,7 @@ function Settings({ settings, onSave, onBack, decks, log, stats, onClearLog, onR
   const save = (patch) => { const next = { ...s, ...patch }; setS(next); onSave(next); };
   const voices = useVoices();
   const voiceOptions = useMemo(() => sortedVoices(voices), [voices]);
+  const usage = useUsage();
 
   const exportAll = () => {
     const blob = new Blob([JSON.stringify({ decks, log, settings: s, stats }, null, 2)], { type: "application/json" });
@@ -3383,6 +3822,32 @@ function Settings({ settings, onSave, onBack, decks, log, stats, onClearLog, onR
         <h1 style={S.h1}>Settings</h1>
       </div>
       <p style={S.sub}>Tune the app to fit your study habits.</p>
+
+      <div style={S.panelBox}>
+        <div style={S.panelTitle}>AI usage today</div>
+        {(() => {
+          const pct = Math.min(100, Math.round((usage.tokens / Math.max(1, usage.limit)) * 100));
+          const over = usage.over;
+          const barColor = over ? "var(--danger)" : pct >= 80 ? "var(--warn)" : "var(--success)";
+          return (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6, flexWrap: "wrap", gap: 6 }}>
+                <span style={{ fontSize: 15, fontWeight: 600 }}>{usage.tokens.toLocaleString()} <span style={{ color: "var(--muted)", fontWeight: 400 }}>/ {usage.limit.toLocaleString()} tokens</span></span>
+                <span style={{ fontSize: 12, color: over ? "var(--danger-text)" : "var(--muted2)" }}>{over ? "Limit reached" : `${usage.remaining.toLocaleString()} left`}</span>
+              </div>
+              <div style={{ height: 10, background: "var(--surface-2)", borderRadius: 10, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${pct}%`, background: barColor, borderRadius: 10, transition: "width .4s" }} />
+              </div>
+              <div style={{ ...S.hint, marginTop: 8 }}>
+                Claude Haiku 4.5 tokens used today (input + output). Resets daily.
+                {usage.serverEnforced
+                  ? " Enforced server-side per account."
+                  : " Counted on this device — connect server-side tracking in your Worker for tamper-proof, cross-device limits (see the file's setup notes)."}
+              </div>
+            </>
+          );
+        })()}
+      </div>
 
       <div style={S.panelBox}>
         <div style={S.panelTitle}>Daily goal & limits</div>
@@ -3599,6 +4064,7 @@ function Generate({ onSave, onCancel }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");          // soft warning (e.g. "got 96 of 100")
   const [topUpBusy, setTopUpBusy] = useState(false);
+  const usage = useUsage();
   const cancelRef = useRef(false);
   const styleRef = useRef(style);
   useEffect(() => { styleRef.current = style; }, [style]);
@@ -3745,7 +4211,9 @@ function Generate({ onSave, onCancel }) {
       }
       setStatus("done");
     } catch (e) {
-      setStatus("error"); setError("Couldn't reach the AI: " + (e.message || "unknown error"));
+      setStatus("error");
+      if (e && e.code === "DAILY_LIMIT") setError("You've hit today's AI token limit. It resets tomorrow — your decks and progress are unaffected.");
+      else setError("Couldn't reach the AI: " + (e.message || "unknown error"));
     }
   };
 
@@ -3779,6 +4247,13 @@ function Generate({ onSave, onCancel }) {
       {!WORKER_CONFIGURED && (
         <div style={{ ...S.errorBox, background: "var(--warn-bg)", borderColor: "var(--warn-border)", color: "var(--warn-text)" }}>
           AI isn’t connected yet. Open this file and set <b>WORKER_URL</b> (near the top) to your Cloudflare Worker URL. Setup steps are in the comment at the bottom of the file.
+        </div>
+      )}
+      {WORKER_CONFIGURED && (
+        <div style={{ ...S.hint, marginTop: 6 }}>
+          {usage.over
+            ? <span style={{ color: "var(--danger-text)" }}>⚠ Daily AI token limit reached — resets tomorrow.</span>
+            : <>Daily AI budget: {usage.remaining.toLocaleString()} of {usage.limit.toLocaleString()} tokens left.</>}
         </div>
       )}
       <div style={{ ...S.addBox, marginTop: 18 }}>
@@ -4093,7 +4568,7 @@ function ImportDoc({ onSave, onCancel }) {
               { maxTokens: MAX_OUTPUT_TOKENS, retries: 2 }
             );
           }
-        } catch (e) { failures++; continue; }
+        } catch (e) { if (e && e.code === "DAILY_LIMIT") throw e; failures++; continue; }
 
         const parsed = style === "cloze" ? parseClozeCards(out) : parseCards(out);
         for (const c of parsed) {
@@ -4104,7 +4579,12 @@ function ImportDoc({ onSave, onCancel }) {
         setCards(collected.slice());
       }
     } catch (e) {
-      setStatus("error"); setError("Couldn't reach the AI: " + (e.message || "unknown error")); setChunkMsg(""); return;
+      setChunkMsg("");
+      if (e && e.code === "DAILY_LIMIT") {
+        if (collected.length) { setNotice(`Hit today's AI token limit — kept the ${collected.length} cards made so far. The limit resets tomorrow.`); if (!name) setName("Imported notes"); setStatus("done"); return; }
+        setStatus("error"); setError("You've hit today's AI token limit. It resets tomorrow."); return;
+      }
+      setStatus("error"); setError("Couldn't reach the AI: " + (e.message || "unknown error")); return;
     }
 
     setChunkMsg("");
@@ -4338,8 +4818,8 @@ const S = {
   barLabel: { fontSize: 9, color: "var(--muted3)", marginTop: 4 },
   heatWrap: { display: "grid", gridTemplateColumns: "repeat(15,1fr)", gap: 4 },
   heatCell: { paddingBottom: "100%", borderRadius: 3 },
-  yearWrap: { display: "grid", gridTemplateColumns: "repeat(53, 1fr)", gridAutoFlow: "column", gridTemplateRows: "repeat(7, 1fr)", gap: 2 },
-  yearCell: { width: "100%", paddingBottom: "100%", borderRadius: 2 },
+  yearWrap: { display: "grid", gridTemplateColumns: "repeat(53, 1fr)", gridAutoFlow: "column", gridTemplateRows: "repeat(7, 1fr)", gap: 2, gridAutoColumns: "minmax(0, 1fr)" },
+  yearCell: { width: "100%", paddingBottom: "100%", borderRadius: 2, maxWidth: 22, maxHeight: 22 },
   weakRow: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8 },
   weakBarTrack: { flex: 1, height: 6, background: "var(--surface-2)", borderRadius: 4, overflow: "hidden" },
   weakBarFill: { height: "100%", background: "var(--gold)", borderRadius: 4 },
@@ -4425,6 +4905,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .hint-btn:hover { border-color: var(--warn); }
 .type-chip { background: var(--surface); color: var(--muted); border: 1px solid var(--border-strong); padding: 5px 12px; font-size: 13px; text-transform: capitalize; }
 .type-chip.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.range-tab { background: var(--surface); color: var(--muted); border: 1px solid var(--border-strong); padding: 3px 10px; font-size: 12px; border-radius: 6px; }
+.range-tab:hover:not(.on) { border-color: var(--accent); color: var(--text); }
+.range-tab.on { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.linklike { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
 .dropzone:hover { border-color: var(--accent); background: var(--accent-bg); }
 .dropzone.over { border-color: var(--accent); background: var(--accent-bg); transform: scale(1.01); }
 .word { cursor: pointer; border-radius: 3px; padding: 0 1px; transition: background .1s; }
@@ -4529,8 +5013,11 @@ root.render(<ErrorBoundary><App /></ErrorBoundary>);
   SETUP — connect Kioku to your Cloudflare Worker
   ============================================================
   1) Set WORKER_URL near the top of this file to your Worker URL.
-  2) Your Worker holds the Anthropic key and proxies requests.
-     Reference Worker (Workers & Pages → Create Worker → paste → Deploy):
+
+  2) Your Worker holds the Anthropic key, proxies requests, AND meters
+     per-user token usage with a daily cap (1,000,000 Haiku 4.5 tokens/user/day).
+     Replace your Worker's code with this (Workers & Pages → your Worker →
+     Edit code → paste → Deploy):
 
      export default {
        async fetch(request, env) {
@@ -4538,44 +5025,82 @@ root.render(<ErrorBoundary><App /></ErrorBoundary>);
            "Access-Control-Allow-Origin": "*",
            "Access-Control-Allow-Methods": "POST, OPTIONS",
            "Access-Control-Allow-Headers": "Content-Type",
+           // let the browser read the usage headers we send back:
+           "Access-Control-Expose-Headers": "X-Usage-Today, X-Usage-Limit, X-Limit-Reached",
          };
          if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
          if (request.method !== "POST")   return new Response("POST only", { status: 405, headers: cors });
 
-         const { prompt, maxTokens } = await request.json();
+         const DAILY_LIMIT = 1000000;                 // Haiku 4.5 tokens per user per day
+         const { prompt, maxTokens, userId } = await request.json();
+         const uid = (userId || "anon").slice(0, 64);
+         const day = new Date().toISOString().slice(0, 10);  // UTC day
+         const key = "usage:" + uid + ":" + day;
+
+         // read today's usage (requires a KV namespace bound as USAGE — see step 4).
+         // if KV isn't bound, the Worker still works but won't enforce limits.
+         let used = 0;
+         if (env.USAGE) { const v = await env.USAGE.get(key); used = v ? (parseInt(v, 10) || 0) : 0; }
+
+         if (env.USAGE && used >= DAILY_LIMIT) {
+           return new Response(JSON.stringify({ error: { type: "daily_limit", message: "Daily token limit reached." } }), {
+             status: 429,
+             headers: { ...cors, "Content-Type": "application/json",
+                        "X-Limit-Reached": "daily", "X-Usage-Today": String(used), "X-Usage-Limit": String(DAILY_LIMIT) },
+           });
+         }
+
          const r = await fetch("https://api.anthropic.com/v1/messages", {
            method: "POST",
-           headers: {
-             "Content-Type": "application/json",
-             "x-api-key": env.ANTHROPIC_KEY,            // set in Worker → Settings → Variables
-             "anthropic-version": "2023-06-01",
-           },
-           body: JSON.stringify({
-             model: "claude-haiku-4-5-20251001",
-             max_tokens: maxTokens || 8192,
-             messages: [{ role: "user", content: prompt }],
-           }),
+           headers: { "Content-Type": "application/json", "x-api-key": env.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
+           body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: maxTokens || 8192, messages: [{ role: "user", content: prompt }] }),
          });
          const body = await r.text();
-         return new Response(body, { status: r.status, headers: { ...cors, "Content-Type": "application/json" } });
+
+         // add this call's real token usage to the daily counter
+         let total = used;
+         try {
+           const data = JSON.parse(body);
+           const u = data.usage || {};
+           total = used + (u.input_tokens || 0) + (u.output_tokens || 0);
+           if (env.USAGE) await env.USAGE.put(key, String(total), { expirationTtl: 60 * 60 * 48 }); // auto-clears after 48h
+         } catch (e) {}
+
+         return new Response(body, {
+           status: r.status,
+           headers: { ...cors, "Content-Type": "application/json",
+                      "X-Usage-Today": String(total), "X-Usage-Limit": String(DAILY_LIMIT) },
+         });
        },
      };
 
-  3) Add your key as a Worker variable named ANTHROPIC_KEY (encrypted).
-     The key never appears in this file, so it is safe to host publicly.
+  3) Add your key as a Worker SECRET named ANTHROPIC_KEY:
+     Worker → Settings → Variables and Secrets → Add → type Secret → name ANTHROPIC_KEY → paste your sk-ant-… key → Deploy.
+     The key never appears in this file, so it's safe to host publicly.
+
+  4) Create a KV namespace for usage tracking (this is what makes limits real):
+     - Cloudflare dashboard → Storage & Databases → KV → Create namespace (name it e.g. "kioku-usage").
+     - Then Worker → Settings → Bindings → Add → KV namespace → Variable name: USAGE → select that namespace → Deploy.
+     Without this binding the app still works and shows a per-device estimate, but limits aren't enforced server-side.
+
+  NOTES on usage limiting:
+  - Server-enforced limit is keyed on an anonymous per-browser id the app generates. Clearing browser storage yields a new id,
+    so for true per-ACCOUNT limits across devices you'd add real login/auth. KV counters are eventually consistent — fine for
+    personal/low-traffic use; for strict accuracy under heavy concurrency use Durable Objects instead.
+  - The server day is UTC; the client display rolls at local midnight. Minor cosmetic mismatch at the boundary only.
 
   WHAT'S NEW (Kioku v3):
+  - Per-user token usage tracking + daily limit (1M Haiku 4.5 tokens/day), client meter + server enforcement via KV
   - AI generation via Cloudflare Worker (API key stays server-side; file is public-safe)
   - AI deck generation in three styles: Q&A, Reverse (⇄), and Cloze
   - Reliable exact-count generation (no more random short decks) + "Generate more" + Stop
   - Document/PDF import chunks long text so nothing is dropped
   - Context-aware AI exam distractors (with offline fallback)
-  - Multiple natural TTS voices + tone presets, voice picker in Settings
-  - Retry/backoff on rate limits & overloads; clearer error + progress states
-  - XP & levels, daily goal, streak freezes, achievements, dark mode
-  - Type-the-answer (fuzzy), MC quiz, undo (U), suspend, leech detection
-  - Cloze + reverse cards, per-card hints & images, year heatmap, stats
-  - Full backup export/import
+  - Math (KaTeX) rendering on cards; multiple natural TTS voices + tone presets; per-card audio
+  - Anki-like new-card intervals (Good ~2d, Easy 4d); activity heatmap with range tabs; error boundary
+  - XP & levels, daily goal, streak freezes, achievements, dark mode, IndexedDB storage
+  - Type-the-answer (fuzzy), MC quiz, inline edit, tap/swipe touch controls, undo, suspend, leech detection
+  - Cloze + reverse cards, per-card hints & images, full backup export/import
 -->
 </body>
 </html>

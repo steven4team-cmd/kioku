@@ -32,6 +32,7 @@
   --tutor:#8b6fc4; --tutor-bg:#f3f0fa; --tutor-border:#d9cef0;
   --gold:#d9a155;
   --shadow:0 1px 2px rgba(20,25,35,.04);
+  --shadow-md:0 4px 16px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.04);
 }
 body.dark{
   --bg:#15171a; --surface:#1e2126; --surface-2:#262a30; --surface-3:#1a1d22;
@@ -44,9 +45,15 @@ body.dark{
   --tutor:#a892d8; --tutor-bg:#251f33; --tutor-border:#37304a;
   --gold:#e0bb73;
   --shadow:0 1px 2px rgba(0,0,0,.4);
+  --shadow-md:0 6px 20px rgba(0,0,0,.5), 0 2px 4px rgba(0,0,0,.3);
 }
 html,body,#root{height:100%;margin:0;background:var(--bg);color:var(--text);}
-body{transition:background .2s,color .2s;}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+  transition:background .2s,color .2s;
+}
 @keyframes confetti-fall {
   0% { transform: translateY(-20px) rotate(0deg); opacity: 1; }
   100% { transform: translateY(110vh) rotate(720deg); opacity: 0; }
@@ -237,28 +244,42 @@ const accountStore = (function () {
     catch (e) {}
   }
   function scheduleFlush() { clearTimeout(saveTimer); saveTimer = setTimeout(flush, 400); }
+  async function flushNow() { clearTimeout(saveTimer); saveTimer = null; await flush(); }
 
   return {
     // called by the auth layer when sign-in state changes
     async setUser(u) {
+      // flush any pending writes for the OUTGOING user before we swap accounts
+      if (user && sb) { try { await flushNow(); } catch (e) {} }
       user = u;
       cache = null; loaded = false;
-      clearTimeout(saveTimer);
+      clearTimeout(saveTimer); saveTimer = null;
       if (user) await loadCloud();
     },
     isCloud() { return !!user && !!sb; },
     currentUser() { return user; },
-    // push the device's existing data up to a fresh/empty cloud account (one-time migration)
+    // One-time migration: push the device's existing local data into a fresh
+    // cloud account, BUT only the very first time anyone signs in on this device.
+    // Without that guard, signing into a second account on a shared/family
+    // device would push the first account's leftover local data into it.
     async seedFromLocal() {
       if (!user || !sb) return false;
+      try {
+        const seeded = await localStore.get("cloudSeeded");
+        if (seeded && seeded.value) return false; // already migrated once on this device
+      } catch (e) {}
       await loadCloud();
       const has = cache && Object.keys(cache).length > 0 && (cache.decks || cache.log);
-      if (has) return false; // cloud already has data — don't clobber it
+      if (has) {
+        try { await localStore.set("cloudSeeded", "1"); } catch (e) {}
+        return false; // cloud already has data — don't clobber it
+      }
       const next = {};
       for (const k of CLOUD_KEYS) {
         const v = await localStore.get(k);
         if (v && v.value != null) next[k] = v.value;
       }
+      try { await localStore.set("cloudSeeded", "1"); } catch (e) {}
       if (Object.keys(next).length) { cache = next; await flush(); return true; }
       cache = cache || {};
       return false;
@@ -288,7 +309,7 @@ const accountStore = (function () {
       }
       return localStore.remove(key);
     },
-    flushNow: flush,
+    flushNow,
   };
 })();
 window.storage = accountStore;
@@ -1040,7 +1061,7 @@ function clozeAnswer(text)   { const n = clozeNumbers(text); return renderCloze(
    "User" without a login system = one anonymous id per browser.
    Real per-account limits across devices need real auth.
    ============================================================ */
-const DAILY_TOKEN_LIMIT = 1000000; // Haiku 4.5 tokens per user per day
+const DAILY_TOKEN_LIMIT = 100000; // Haiku 4.5 tokens per user per day
 
 // Id sent to the Worker so it can meter tokens per user. When signed in we use
 // the real account id (so the limit follows the account across devices); when
@@ -1534,9 +1555,9 @@ function AccountScreen({ user, onBack }) {
       <div className="fade">
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
           <button className="ghost" onClick={onBack}>← Back</button>
-          <h1 style={S.h1}>Account</h1>
+          <h1 className="app-h1" style={S.h1}>Account</h1>
         </div>
-        <div style={S.panelBox}>
+        <div className="panel-box" style={S.panelBox}>
           <div style={S.panelTitle}>Signed in</div>
           <p style={{ ...S.sub, marginTop: 0 }}>{user.email || user.id}</p>
           <p style={S.hint}>Your decks, stats, and AI usage sync to this account and follow you across devices.</p>
@@ -1550,7 +1571,7 @@ function AccountScreen({ user, onBack }) {
     <div className="fade">
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
         <button className="ghost" onClick={onBack}>← Back</button>
-        <h1 style={S.h1}>{mode === "signup" ? "Create account" : "Sign in"}</h1>
+        <h1 className="app-h1" style={S.h1}>{mode === "signup" ? "Create account" : "Sign in"}</h1>
       </div>
       <p style={S.sub}>Save your decks to the cloud and sync across devices.</p>
 
@@ -1563,9 +1584,12 @@ function AccountScreen({ user, onBack }) {
         </div>
         <div style={{ textAlign: "center", color: "var(--muted3)", fontSize: 12, margin: "6px 0 14px" }}>or use email</div>
 
-        <input className="ta" type="email" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} style={{ marginBottom: 8 }} />
+        <input className="ta" type="email" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)}
+               onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+               autoComplete="email" style={{ marginBottom: 8 }} />
         <input className="ta" type="password" placeholder="password" value={pw} onChange={(e) => setPw(e.target.value)}
-               onKeyDown={(e) => { if (e.key === "Enter") submit(); }} style={{ marginBottom: 12 }} />
+               onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+               autoComplete={mode === "signup" ? "new-password" : "current-password"} style={{ marginBottom: 12 }} />
 
         {err && <div style={S.errorBox}>{err}</div>}
         {msg && <div style={{ ...S.errorBox, background: "var(--success-bg)", borderColor: "var(--success-border)", color: "var(--success-text)" }}>{msg}</div>}
@@ -1759,7 +1783,13 @@ function App() {
   }, []);
   const persistSettings = useCallback(async (next) => {
     setSettings(next);
-    try { await window.storage.set("settings", JSON.stringify(next)); } catch (e) {}
+    try { await window.storage.set("settings", JSON.stringify(next)); }
+    catch (e) {
+      if (!persistWarned.current) {
+        persistWarned.current = true;
+        alert("Couldn't save your latest changes. This is rare — it usually means the browser blocked storage (private/incognito mode) or ran very low on disk space. Export a backup from Settings to be safe.");
+      }
+    }
   }, []);
   const persistStats = useCallback(async (next) => {
     setStats(next);
@@ -1815,7 +1845,7 @@ function App() {
     <div style={S.root}>
       <style>{CSS}</style>
       <ToastHost />
-      <div style={S.shell}>
+      <div className="app-shell" style={S.shell}>
         <header style={S.header}>
           <div style={S.brand} onClick={() => setView("home")}>
             <span style={S.mark}>記</span> Kioku
@@ -1825,14 +1855,14 @@ function App() {
             <LevelChip level={levelInfo.lvl} xp={levelInfo.intoLevel} next={levelInfo.levelNeeds} />
             <StreakChip streak={liveStats.streak} freezesLeft={freezesPerMonth(levelInfo.lvl) - (stats.freezesUsed || 0)} maxFreezes={freezesPerMonth(levelInfo.lvl)} />
             {SUPABASE_ENABLED && (
-              <button className="icon" title={user ? "Account" : "Sign in"} onClick={() => setView("account")}>
-                {user ? "👤" : "Sign in"}
-              </button>
+              user
+                ? <button className="icon" title={user.email || "Account"} onClick={() => setView("account")}>👤</button>
+                : <button className="ghost" style={{ padding: "4px 12px", fontSize: 13 }} onClick={() => setView("account")}>Sign in</button>
             )}
             <button className="icon" title="Settings" onClick={() => setView("settings")}>⚙</button>
           </div>
         </header>
-        <nav style={S.nav}>
+        <nav className="app-nav" style={S.nav}>
           <button className={navCls(view, "home")} onClick={() => setView("home")}>Decks</button>
           <button className={navCls(view, "library")} onClick={() => setView("library")}>Library</button>
           <button className={navCls(view, "dashboard")} onClick={() => setView("dashboard")}>Stats</button>
@@ -1970,7 +2000,7 @@ function Home({ decks, log, settings, stats, levelInfo, onCreate, onOpen, onStud
     <div className="fade">
       <div style={S.homeTop}>
         <div>
-          <h1 style={S.h1}>Your decks</h1>
+          <h1 className="app-h1" style={S.h1}>Your decks</h1>
           <p style={S.sub}>Spaced repetition that adapts. Tap a word in review to look it up.</p>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -2731,10 +2761,12 @@ function Study({ deck, mode, settings, onSave, onLog, onUndo, onTutorUsed, onDon
   };
   const onTouchStart = (e) => {
     const t = e.touches && e.touches[0]; if (!t) return;
-    touch.current = { x: t.clientX, y: t.clientY, moved: false };
+    // if the tap started on a word, let the word handle it — the card stays put
+    const onWord = e.target && e.target.closest && e.target.closest(".word, .audio-play, .hint-btn, button, a, input, textarea");
+    touch.current = { x: t.clientX, y: t.clientY, moved: false, ignore: !!onWord };
   };
   const onTouchMove = (e) => {
-    if (!touch.current) return;
+    if (!touch.current || touch.current.ignore) return;
     const t = e.touches && e.touches[0]; if (!t) return;
     const dx = t.clientX - touch.current.x, dy = t.clientY - touch.current.y;
     if (Math.abs(dx) > 10 || Math.abs(dy) > 10) touch.current.moved = true;
@@ -2746,11 +2778,12 @@ function Study({ deck, mode, settings, onSave, onLog, onUndo, onTutorUsed, onDon
   const onTouchEnd = (e) => {
     const start = touch.current; touch.current = null;
     if (!start) return;
+    setSwipeHint(null);
+    lastTouchEnd.current = Date.now(); // so the synthetic mouse-click that follows is ignored
+    if (start.ignore) return;          // touch began on a word/button — leave it alone
     const t = e.changedTouches && e.changedTouches[0];
     const dx = t ? t.clientX - start.x : 0, dy = t ? t.clientY - start.y : 0;
     const dist = Math.hypot(dx, dy);
-    setSwipeHint(null);
-    lastTouchEnd.current = Date.now(); // so the synthetic mouse-click that follows is ignored
     // a tap (no real movement) flips the card from the front
     if (!start.moved && dist < 12) {
       if (!flipped && !typeMode && !mcMode) setFlipped(true);
@@ -2862,7 +2895,7 @@ function Study({ deck, mode, settings, onSave, onLog, onUndo, onTutorUsed, onDon
         {(flipped ? card.backImage : card.frontImage) && (
           <img src={flipped ? card.backImage : card.frontImage} alt="" style={S.studyImg} />
         )}
-        <div style={S.faceText}>
+        <div className="face-text" style={S.faceText}>
           <MathText text={faceText} renderText={(str, base) =>
             segmentWords(str).map((seg, i) => seg.word
               ? <span key={base + ":" + i} className="word" onClick={(e) => { e.stopPropagation(); lookupWord(seg.text); }}>{seg.text}</span>
@@ -3245,7 +3278,7 @@ function ExamMode({ deck, onDone, onExamResult }) {
           <div style={S.hint}>Finished in {Math.floor(duration / 60)}m {duration % 60}s</div>
         </div>
 
-        <div style={S.panelBox}>
+        <div className="panel-box" style={S.panelBox}>
           <div style={S.panelTitle}>Question review</div>
           {questions.map((x, i) => {
             const pickedOpt = answers[x.cardId];
@@ -3284,10 +3317,10 @@ function ExamMode({ deck, onDone, onExamResult }) {
       </div>
       <div style={S.progress}><div style={{ ...S.progressBar, width: `${(Object.keys(answers).length / questions.length) * 100}%` }} /></div>
 
-      <div style={S.studyCard}>
+      <div className="study-card" style={S.studyCard}>
         <div style={S.faceLabel}>QUESTION {idx + 1}</div>
         {q.frontImage && <img src={q.frontImage} alt="" style={S.studyImg} />}
-        <div style={S.faceText}><MathText text={q.front} /></div>
+        <div className="face-text" style={S.faceText}><MathText text={q.front} /></div>
       </div>
 
       <div className="mc-grid" style={S.mcGrid}>
@@ -3356,7 +3389,7 @@ function Library({ decks, onOpenDeck, onSaveDeck }) {
 
   return (
     <div className="fade">
-      <h1 style={S.h1}>Library</h1>
+      <h1 className="app-h1" style={S.h1}>Library</h1>
       <p style={S.sub}>{allCards.length} cards across {Object.keys(decks).length} decks.</p>
 
       <input style={S.search} placeholder="Search cards…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -3495,7 +3528,7 @@ function Dashboard({ decks, log, settings, stats, levelInfo, liveStats }) {
 
   return (
     <div className="fade">
-      <h1 style={S.h1}>Stats</h1>
+      <h1 className="app-h1" style={S.h1}>Stats</h1>
       <p style={S.sub}>From {cleanLog.length} reviews logged · Level {levelInfo.lvl}</p>
 
       <div style={S.statRow}>
@@ -3505,7 +3538,7 @@ function Dashboard({ decks, log, settings, stats, levelInfo, liveStats }) {
         <Stat label="Cards" value={allCards.length} />
       </div>
 
-      <div style={S.panelBox}>
+      <div className="panel-box" style={S.panelBox}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
           <div style={{ ...S.panelTitle, marginBottom: 0 }}>Activity — last {activityRange} {activityRange === 1 ? "day" : "days"}</div>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
@@ -3520,7 +3553,7 @@ function Dashboard({ decks, log, settings, stats, levelInfo, liveStats }) {
         </div>
       </div>
 
-      <div style={S.panelBox}>
+      <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>Card states</div>
         <div style={S.segBar}>
           {phaseOrder.map((p) => phaseCounts[p] > 0 && (
@@ -3535,7 +3568,7 @@ function Dashboard({ decks, log, settings, stats, levelInfo, liveStats }) {
         </div>
       </div>
 
-      <div style={S.panelBox}>
+      <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>Due over next 14 days</div>
         <div style={S.barWrap}>
           {forecast.map((n, i) => (
@@ -3547,7 +3580,7 @@ function Dashboard({ decks, log, settings, stats, levelInfo, liveStats }) {
         </div>
       </div>
 
-      <div style={S.panelBox}>
+      <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>When you study</div>
         <div style={S.barWrap}>
           {hourBuckets.map((n, i) => (
@@ -3560,7 +3593,7 @@ function Dashboard({ decks, log, settings, stats, levelInfo, liveStats }) {
         <div style={{ ...S.hint, marginTop: 6 }}>Hour of day (00-23). When are you sharpest?</div>
       </div>
 
-      <div style={S.panelBox}>
+      <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>Hardest cards</div>
         {hardest.length === 0 ? <div style={S.muted2}>No problem cards yet — keep going!</div> : (
           hardest.map((h) => {
@@ -3581,7 +3614,7 @@ function Dashboard({ decks, log, settings, stats, levelInfo, liveStats }) {
         )}
       </div>
 
-      <div style={S.panelBox}>
+      <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>Weakest areas</div>
         {weakTags.length === 0 ? <div style={S.muted2}>Add tags to your cards to see weak areas.</div> : (
           weakTags.map((w) => (
@@ -3622,15 +3655,18 @@ function HeatmapYear({ year, maxYr }) {
   const onLeave = () => setHov(null);
   const fmtDate = (d) => d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
   const cols = Math.max(1, Math.ceil(year.length / 7)); // 7 rows (days of week), columns = weeks shown
+  // Pick a fixed square cell size based on how many weeks we're showing.
+  // This keeps squares as squares — never stretched into tall rectangles.
+  const cellPx = year.length <= 14 ? 32 : year.length <= 35 ? 24 : year.length <= 70 ? 18 : year.length <= 200 ? 14 : 11;
 
   return (
-    <div ref={wrapRef} style={{ position: "relative" }}>
-      <div style={{ ...S.yearWrap, gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
+    <div ref={wrapRef} style={{ position: "relative", overflowX: "auto" }}>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, ${cellPx}px)`, gridTemplateRows: `repeat(7, ${cellPx}px)`, gridAutoFlow: "column", gap: 2, width: "max-content" }}>
         {year.map((h) => (
           <div key={h.k}
                onMouseEnter={(ev) => onEnter(h, ev)}
                onMouseLeave={onLeave}
-               style={{ ...S.yearCell, cursor: "pointer", background: h.n === 0 ? "var(--border-light)" : `rgba(59,130,196,${0.25 + 0.75 * (h.n / maxYr)})` }} />
+               style={{ width: cellPx, height: cellPx, borderRadius: 2, cursor: "pointer", background: h.n === 0 ? "var(--border-light)" : `rgba(59,130,196,${0.25 + 0.75 * (h.n / maxYr)})` }} />
         ))}
       </div>
       {hov && (
@@ -3684,7 +3720,7 @@ function Achievements({ stats, earned, levelInfo, xpTotal }) {
 
   return (
     <div className="fade">
-      <h1 style={S.h1}>Achievements</h1>
+      <h1 className="app-h1" style={S.h1}>Achievements</h1>
       <p style={S.sub}>{earned.length} of {ACHIEVEMENTS.length} unlocked</p>
       <div style={S.progress}><div style={{ ...S.progressBar, width: `${(earned.length / ACHIEVEMENTS.length) * 100}%`, background: "var(--gold)" }} /></div>
 
@@ -3819,11 +3855,11 @@ function Settings({ settings, onSave, onBack, decks, log, stats, onClearLog, onR
     <div className="fade">
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
         <button className="ghost" onClick={onBack}>← Back</button>
-        <h1 style={S.h1}>Settings</h1>
+        <h1 className="app-h1" style={S.h1}>Settings</h1>
       </div>
       <p style={S.sub}>Tune the app to fit your study habits.</p>
 
-      <div style={S.panelBox}>
+      <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>AI usage today</div>
         {(() => {
           const pct = Math.min(100, Math.round((usage.tokens / Math.max(1, usage.limit)) * 100));
@@ -3849,7 +3885,7 @@ function Settings({ settings, onSave, onBack, decks, log, stats, onClearLog, onR
         })()}
       </div>
 
-      <div style={S.panelBox}>
+      <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>Daily goal & limits</div>
         <SettingRow label="Daily goal (cards/day)" hint="Triggers a celebration when hit. Higher = more motivating but harder.">
           <input type="number" className="ta" style={{ width: 80 }} min={1} max={500} value={s.dailyGoal} onChange={(e) => save({ dailyGoal: Math.min(500, Math.max(1, +e.target.value || 1)) })} />
@@ -3859,7 +3895,7 @@ function Settings({ settings, onSave, onBack, decks, log, stats, onClearLog, onR
         </SettingRow>
       </div>
 
-      <div style={S.panelBox}>
+      <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>Study experience</div>
         <SettingRow label="Type-the-answer by default" hint="Active recall — type your answer instead of flipping. Fuzzy match, accepts typos.">
           <Switch on={s.typeAnswer} onChange={(v) => save({ typeAnswer: v })} />
@@ -3890,14 +3926,14 @@ function Settings({ settings, onSave, onBack, decks, log, stats, onClearLog, onR
         </div>
       </div>
 
-      <div style={S.panelBox}>
+      <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>Appearance</div>
         <SettingRow label="Dark mode" hint="Easier on the eyes for evening study.">
           <Switch on={s.darkMode} onChange={(v) => save({ darkMode: v })} />
         </SettingRow>
       </div>
 
-      <div style={S.panelBox}>
+      <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>Backup & data</div>
         <p style={S.hint}>Your data lives in this browser's local storage. Back it up regularly.</p>
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
@@ -3909,7 +3945,7 @@ function Settings({ settings, onSave, onBack, decks, log, stats, onClearLog, onR
         </div>
       </div>
 
-      <div style={S.panelBox}>
+      <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>Reset</div>
         <p style={S.hint}>Danger zone. None of this is undoable.</p>
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
@@ -4242,7 +4278,7 @@ function Generate({ onSave, onCancel }) {
 
   return (
     <div className="fade">
-      <h1 style={S.h1}>Generate a deck</h1>
+      <h1 className="app-h1" style={S.h1}>Generate a deck</h1>
       <p style={S.sub}>Describe what you want, pick a card style, then edit before saving.</p>
       {!WORKER_CONFIGURED && (
         <div style={{ ...S.errorBox, background: "var(--warn-bg)", borderColor: "var(--warn-border)", color: "var(--warn-text)" }}>
@@ -4604,7 +4640,7 @@ function ImportDoc({ onSave, onCancel }) {
 
   return (
     <div className="fade">
-      <h1 style={S.h1}>From notes, PDF, or image</h1>
+      <h1 className="app-h1" style={S.h1}>From notes, PDF, or image</h1>
       <p style={S.sub}>Drag a file in, browse, or paste notes. The AI breaks it into atomic cards.</p>
       {!WORKER_CONFIGURED && (
         <div style={{ ...S.errorBox, background: "var(--warn-bg)", borderColor: "var(--warn-border)", color: "var(--warn-text)" }}>
@@ -4694,7 +4730,7 @@ function ImportDoc({ onSave, onCancel }) {
 /* ---------------- styles ---------------- */
 const ACCENT = "var(--accent)";
 const S = {
-  root: { minHeight: "100%", background: "var(--bg)", color: "var(--text)", fontFamily: "'Helvetica Neue', Arial, sans-serif" },
+  root: { minHeight: "100%", background: "var(--bg)", color: "var(--text)", fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" },
   shell: { maxWidth: 760, margin: "0 auto", padding: "18px 22px 60px" },
   header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 10 },
   brand: { fontSize: 19, cursor: "pointer", fontWeight: 600 },
@@ -4908,7 +4944,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .range-tab { background: var(--surface); color: var(--muted); border: 1px solid var(--border-strong); padding: 3px 10px; font-size: 12px; border-radius: 6px; }
 .range-tab:hover:not(.on) { border-color: var(--accent); color: var(--text); }
 .range-tab.on { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
-.linklike { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
+.linklike { background: none; border: none; color: var(--accent); cursor: pointer; padding: 2px 4px; font: inherit; text-decoration: underline; }
 .dropzone:hover { border-color: var(--accent); background: var(--accent-bg); }
 .dropzone.over { border-color: var(--accent); background: var(--accent-bg); transform: scale(1.01); }
 .word { cursor: pointer; border-radius: 3px; padding: 0 1px; transition: background .1s; }
@@ -4955,12 +4991,47 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .swipe-legend { display: none; }
 @media (pointer: coarse) { .swipe-legend { display: block; } }
 
-/* Phone layout: roomier tap targets, single-column MC, larger card text. */
+/* ============================================================
+   MOBILE LAYOUT — phones <560px get genuinely-mobile spacing,
+   not just shrunken desktop. Tighter shell, smaller heading,
+   shorter card padding, scrollable nav.
+   ============================================================ */
 @media (max-width: 560px) {
-  .grade { padding: 14px 4px; }
-  .grade .gl { font-size: 15px; }
-  .mc-opt { padding: 16px 14px; font-size: 16px; }
+  body { font-size: 14px; }
+
+  /* the shell wrapper needs less padding on small screens so content gets room */
+  .app-shell { padding: 12px 14px 60px !important; }
+
+  /* heading is smaller and tighter — gives the card more vertical room */
+  .app-h1 { font-size: 21px !important; }
+
+  /* the nav scrolls horizontally if it would otherwise wrap awkwardly */
+  .app-nav { overflow-x: auto; flex-wrap: nowrap !important; -webkit-overflow-scrolling: touch; padding-bottom: 4px; }
+  .app-nav > button { flex-shrink: 0; }
+
+  /* study card is shorter; less vertical padding so the answer is reachable */
+  .study-card { padding: 28px 18px !important; min-height: 140px !important; }
+
+  /* face text fits more comfortably */
+  .face-text { font-size: 19px !important; }
+
+  /* grade buttons: roomier tap targets, label slightly smaller to fit interval below */
+  .grade { padding: 12px 4px; }
+  .grade .gl { font-size: 14px; }
+  .grade .gi { font-size: 10px; }
+
+  /* multiple-choice options: one per row, bigger tap targets */
+  .mc-opt { padding: 14px 12px; font-size: 15px; }
   .mc-grid { grid-template-columns: 1fr !important; }
+
+  /* panels: tighter padding so they don't feel boxy */
+  .panel-box { padding: 14px !important; }
+
+  /* number inputs in settings shouldn't be 80px wide on a phone */
+  input[type="number"].ta { width: 70px !important; }
+
+  /* dropzone is shorter on phone to save vertical room */
+  .dropzone { padding: 18px 12px !important; }
 }
 
 /* KaTeX: keep block formulas from overflowing narrow cards; tidy spacing. */
@@ -4990,7 +5061,7 @@ class ErrorBoundary extends React.Component {
   render() {
     if (!this.state.error) return this.props.children;
     return (
-      <div style={{ maxWidth: 520, margin: "60px auto", padding: 24, fontFamily: "'Helvetica Neue', Arial, sans-serif", color: "var(--text)", textAlign: "center" }}>
+      <div style={{ maxWidth: 520, margin: "60px auto", padding: 24, fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif", color: "var(--text)", textAlign: "center" }}>
         <div style={{ fontSize: 40, marginBottom: 8 }}>😕</div>
         <h2 style={{ margin: "0 0 8px" }}>Something went wrong</h2>
         <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>
@@ -5015,7 +5086,7 @@ root.render(<ErrorBoundary><App /></ErrorBoundary>);
   1) Set WORKER_URL near the top of this file to your Worker URL.
 
   2) Your Worker holds the Anthropic key, proxies requests, AND meters
-     per-user token usage with a daily cap (1,000,000 Haiku 4.5 tokens/user/day).
+     per-user token usage with a daily cap (100,000 Haiku 4.5 tokens/user/day).
      Replace your Worker's code with this (Workers & Pages → your Worker →
      Edit code → paste → Deploy):
 
@@ -5031,7 +5102,7 @@ root.render(<ErrorBoundary><App /></ErrorBoundary>);
          if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
          if (request.method !== "POST")   return new Response("POST only", { status: 405, headers: cors });
 
-         const DAILY_LIMIT = 1000000;                 // Haiku 4.5 tokens per user per day
+         const DAILY_LIMIT = 100000;                 // Haiku 4.5 tokens per user per day
          const { prompt, maxTokens, userId } = await request.json();
          const uid = (userId || "anon").slice(0, 64);
          const day = new Date().toISOString().slice(0, 10);  // UTC day
@@ -5090,7 +5161,7 @@ root.render(<ErrorBoundary><App /></ErrorBoundary>);
   - The server day is UTC; the client display rolls at local midnight. Minor cosmetic mismatch at the boundary only.
 
   WHAT'S NEW (Kioku v3):
-  - Per-user token usage tracking + daily limit (1M Haiku 4.5 tokens/day), client meter + server enforcement via KV
+  - Per-user token usage tracking + daily limit (100k Haiku 4.5 tokens/day), client meter + server enforcement via KV
   - AI generation via Cloudflare Worker (API key stays server-side; file is public-safe)
   - AI deck generation in three styles: Q&A, Reverse (⇄), and Cloze
   - Reliable exact-count generation (no more random short decks) + "Generate more" + Stop

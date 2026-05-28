@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sign in · Kioku</title>
+<meta name="theme-color" content="#3b82c4" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%233b82c4'/%3E%3Ctext x='32' y='46' font-size='40' text-anchor='middle' fill='white' font-family='sans-serif'%3E%E8%A8%98%3C/text%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root{
+    --bg:#ffffff;--ink:#1e2329;--ink-soft:#5b636b;--ink-faint:#969ca3;
+    --line:#e6e9ee;--accent:#3b82c4;--accent-deep:#2d6aa3;--accent-soft:#eef4fa;
+    --danger:#c0564b;--danger-bg:#fbf0ef;--danger-border:#e3c4c0;
+    --success-text:#3f7a5a;--success-bg:#eff6f2;--success-border:#c4e0d0;
+    --serif:"Fraunces",Georgia,serif;--sans:"Plus Jakarta Sans",-apple-system,BlinkMacSystemFont,sans-serif;
+    --shadow-lg:0 30px 60px -25px rgba(30,50,80,.32);
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:var(--sans);color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;min-height:100vh;display:flex;}
+  a{color:inherit;text-decoration:none;}
+
+  /* split layout */
+  .auth-wrap{display:grid;grid-template-columns:1fr 1fr;width:100%;min-height:100vh;}
+
+  /* left brand panel */
+  .brandside{position:relative;background:radial-gradient(120% 100% at 30% 20%,#2d6aa3 0%,#214f7d 55%,#16324f 100%);color:#fff;padding:54px 56px;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden;}
+  .brandside .orb{position:absolute;border-radius:50%;filter:blur(70px);opacity:.4;pointer-events:none;}
+  .brandside .orb.a{width:380px;height:380px;background:radial-gradient(circle,#5fa5e0,transparent 70%);top:-90px;right:-80px;}
+  .brandside .orb.b{width:320px;height:320px;background:radial-gradient(circle,#8ec5ff,transparent 70%);bottom:-60px;left:-60px;opacity:.25;}
+  .bs-logo{display:flex;align-items:center;gap:11px;font-weight:700;font-size:22px;position:relative;z-index:1;letter-spacing:-.02em;}
+  .bs-logo .mark{width:36px;height:36px;border-radius:10px;background:rgba(255,255,255,.16);display:grid;place-items:center;font-size:20px;backdrop-filter:blur(6px);}
+  .bs-mid{position:relative;z-index:1;}
+  .bs-mid h1{font-family:var(--serif);font-weight:600;font-size:42px;line-height:1.08;letter-spacing:-.02em;}
+  .bs-mid h1 em{font-style:italic;color:#bcdcff;}
+  .bs-mid p{margin-top:18px;font-size:16px;color:#c8d6e6;line-height:1.6;max-width:380px;}
+  .bs-points{margin-top:28px;display:flex;flex-direction:column;gap:13px;position:relative;z-index:1;}
+  .bs-point{display:flex;align-items:center;gap:11px;font-size:15px;color:#dce6f1;}
+  .bs-point .ic{width:26px;height:26px;border-radius:8px;background:rgba(255,255,255,.13);display:grid;place-items:center;font-size:13px;flex-shrink:0;}
+  .bs-foot{position:relative;z-index:1;font-size:13px;color:#8fa6bd;}
+
+  /* right form panel */
+  .formside{display:flex;align-items:center;justify-content:center;padding:40px 28px;background:#fafbfc;}
+  .card{width:100%;max-width:400px;}
+  .card-h{font-family:var(--serif);font-size:30px;font-weight:600;letter-spacing:-.02em;}
+  .card-sub{color:var(--ink-soft);font-size:15px;margin-top:8px;margin-bottom:26px;}
+
+  .oauth{display:flex;flex-direction:column;gap:10px;}
+  .oauth-btn{display:flex;align-items:center;justify-content:center;gap:11px;width:100%;background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px;font-family:var(--sans);font-size:15px;font-weight:600;color:var(--ink);cursor:pointer;transition:border-color .15s,background .15s,transform .1s,box-shadow .2s;}
+  .oauth-btn:hover{border-color:#cfd6df;background:#fff;transform:translateY(-1px);box-shadow:0 6px 18px -10px rgba(30,50,80,.25);}
+  .oauth-btn svg{width:19px;height:19px;}
+
+  .divider{display:flex;align-items:center;gap:14px;margin:22px 0;color:var(--ink-faint);font-size:12.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;}
+  .divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line);}
+
+  .field{margin-bottom:14px;}
+  .field label{display:block;font-size:13px;font-weight:600;color:var(--ink-soft);margin-bottom:6px;}
+  .field input{width:100%;background:#fff;border:1px solid var(--line);border-radius:11px;padding:13px 14px;font-family:var(--sans);font-size:15px;color:var(--ink);outline:none;transition:border-color .15s,box-shadow .15s;}
+  .field input:focus{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft);}
+
+  .submit{width:100%;background:var(--accent);color:#fff;border:none;border-radius:12px;padding:14px;font-family:var(--sans);font-weight:600;font-size:15.5px;cursor:pointer;transition:background .18s,transform .1s;margin-top:4px;}
+  .submit:hover:not(:disabled){background:var(--accent-deep);transform:translateY(-1px);}
+  .submit:disabled{opacity:.6;cursor:default;}
+
+  .alt{text-align:center;margin-top:20px;font-size:14px;color:var(--ink-soft);}
+  .alt button{background:none;border:none;color:var(--accent);font:inherit;font-weight:600;cursor:pointer;padding:2px 4px;}
+  .alt button:hover{text-decoration:underline;}
+
+  .msg{border-radius:11px;padding:12px 14px;font-size:13.5px;margin-bottom:16px;line-height:1.45;}
+  .msg.err{background:var(--danger-bg);border:1px solid var(--danger-border);color:#9c4a40;}
+  .msg.ok{background:var(--success-bg);border:1px solid var(--success-border);color:var(--success-text);}
+
+  .back{display:inline-flex;align-items:center;gap:6px;color:var(--ink-faint);font-size:14px;margin-bottom:26px;transition:color .15s;}
+  .back:hover{color:var(--ink);}
+
+  .legal{text-align:center;font-size:12px;color:var(--ink-faint);margin-top:22px;line-height:1.5;}
+
+  /* fade for switching modes */
+  .fadein{animation:fadein .3s ease;}
+  @keyframes fadein{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
+
+  @media(max-width:860px){
+    .auth-wrap{grid-template-columns:1fr;}
+    .brandside{display:none;}
+    .formside{background:#fff;}
+  }
+</style>
+</head>
+<body>
+<div class="auth-wrap">
+  <!-- LEFT: brand -->
+  <aside class="brandside">
+    <div class="orb a"></div><div class="orb b"></div>
+    <a href="index.html" class="bs-logo"><span class="mark">記</span> Kioku</a>
+    <div class="bs-mid">
+      <h1>Remember <em>everything</em> you study.</h1>
+      <p>Sign in to pick up your decks, streaks, and progress — synced across every device.</p>
+      <div class="bs-points">
+        <div class="bs-point"><span class="ic">✨</span> AI-built flashcards from any topic or PDF</div>
+        <div class="bs-point"><span class="ic">🧠</span> FSRS-5 spaced repetition that adapts to you</div>
+        <div class="bs-point"><span class="ic">🔥</span> Streaks, goals & a tutor on every card</div>
+      </div>
+    </div>
+    <div class="bs-foot">記憶 — “memory”</div>
+  </aside>
+
+  <!-- RIGHT: form -->
+  <main class="formside">
+    <div class="card">
+      <a href="index.html" class="back">← Back to home</a>
+      <h2 class="card-h" id="title">Welcome back</h2>
+      <p class="card-sub" id="subtitle">Sign in to continue to Kioku.</p>
+
+      <div id="alert"></div>
+
+      <div class="oauth">
+        <button class="oauth-btn" id="google">
+          <svg viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.99.66-2.26 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z"/><path fill="#FBBC05" d="M5.84 14.1a6.6 6.6 0 0 1 0-4.2V7.06H2.18a11 11 0 0 0 0 9.88l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1A11 11 0 0 0 2.18 7.06l3.66 2.84C6.71 7.3 9.14 5.38 12 5.38z"/></svg>
+          Continue with Google
+        </button>
+        <button class="oauth-btn" id="github">
+          <svg viewBox="0 0 24 24"><path fill="#1e2329" d="M12 1A11 11 0 0 0 8.52 22.44c.55.1.75-.24.75-.53v-1.87c-3.06.67-3.71-1.3-3.71-1.3-.5-1.27-1.22-1.61-1.22-1.61-1-.68.08-.67.08-.67 1.1.08 1.68 1.13 1.68 1.13.98 1.68 2.57 1.2 3.2.91.1-.71.38-1.2.69-1.47-2.44-.28-5.01-1.22-5.01-5.43 0-1.2.43-2.18 1.13-2.95-.11-.28-.49-1.4.11-2.91 0 0 .92-.3 3.02 1.13a10.5 10.5 0 0 1 5.5 0c2.1-1.43 3.02-1.13 3.02-1.13.6 1.51.22 2.63.11 2.91.7.77 1.13 1.75 1.13 2.95 0 4.22-2.58 5.15-5.03 5.42.4.34.74 1 .74 2.03v3.01c0 .29.2.64.76.53A11 11 0 0 0 12 1z"/></svg>
+          Continue with GitHub
+        </button>
+      </div>
+
+      <div class="divider">or with email</div>
+
+      <form id="form" autocomplete="on">
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" type="email" placeholder="you@example.com" autocomplete="email" required />
+        </div>
+        <div class="field">
+          <label for="pw">Password</label>
+          <input id="pw" type="password" placeholder="••••••••" autocomplete="current-password" required />
+        </div>
+        <button class="submit" id="submit" type="submit">Sign in</button>
+      </form>
+
+      <p class="alt" id="altline">
+        New to Kioku? <button type="button" data-go="signup">Create an account</button>
+      </p>
+
+      <p class="legal">By continuing you agree to keep studying — and that your decks sync to your account.</p>
+    </div>
+  </main>
+</div>
+
+<script>
+  // ===== Supabase (same project as the app) =====
+  var SUPABASE_URL = "https://dqyyqblvkfemfqqylarl.supabase.co";
+  var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxeXlxYmx2a2ZlbWZxcXlsYXJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4NDIxNzksImV4cCI6MjA5NTQxODE3OX0.qyOHEXXPxSU8DONUN0CKtIZiN0U71QG9gUjeGudvIQM";
+  var APP_URL = "app.html"; // where to land after a successful sign-in
+
+  var sb = (window.supabase && window.supabase.createClient)
+    ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+    : null;
+  var mode = "signin"; // or "signup"
+
+  var titleEl = document.getElementById("title"),
+      subEl = document.getElementById("subtitle"),
+      submitEl = document.getElementById("submit"),
+      altEl = document.getElementById("altline"),
+      alertEl = document.getElementById("alert"),
+      emailEl = document.getElementById("email"),
+      pwEl = document.getElementById("pw"),
+      formCard = document.querySelector(".card");
+
+  // if already signed in, go straight to the app
+  if (sb) {
+    sb.auth.getSession().then(function(res){
+      if (res && res.data && res.data.session) window.location.replace(APP_URL);
+    });
+  }
+
+  function setMode(m){
+    mode = m;
+    var signup = m === "signup";
+    titleEl.textContent = signup ? "Create your account" : "Welcome back";
+    subEl.textContent = signup ? "Start studying in under a minute — free." : "Sign in to continue to Kioku.";
+    submitEl.textContent = signup ? "Create account" : "Sign in";
+    pwEl.setAttribute("autocomplete", signup ? "new-password" : "current-password");
+    altEl.innerHTML = signup
+      ? 'Already have an account? <button type="button" data-go="signin">Sign in</button>'
+      : 'New to Kioku? <button type="button" data-go="signup">Create an account</button>';
+    alertEl.innerHTML = "";
+    formCard.classList.remove("fadein"); void formCard.offsetWidth; formCard.classList.add("fadein");
+  }
+  // event delegation so the (re-rendered) toggle button always works
+  altEl.addEventListener("click", function(e){
+    var btn = e.target.closest("button[data-go]");
+    if (btn) setMode(btn.getAttribute("data-go"));
+  });
+
+  // honor ?mode=signup from the landing page CTAs
+  try {
+    var qp = new URLSearchParams(window.location.search);
+    if (qp.get("mode") === "signup") setMode("signup");
+  } catch (e) {}
+
+  function showMsg(kind, text){
+    alertEl.innerHTML = '<div class="msg ' + kind + '">' + text + '</div>';
+  }
+
+  async function oauth(provider){
+    if (!sb){ showMsg("err", "Couldn't reach the sign-in service. Check your connection and reload."); return; }
+    showMsg("ok", "Redirecting to " + (provider === "google" ? "Google" : "GitHub") + "…");
+    try {
+      var redirect = window.location.href.replace(/auth\.html.*$/, "") + APP_URL;
+      var r = await sb.auth.signInWithOAuth({ provider: provider, options: { redirectTo: redirect } });
+      if (r.error) throw r.error;
+    } catch (e){
+      showMsg("err", (e && e.message) || ("Couldn't start " + provider + " sign-in. Make sure it's enabled in Supabase."));
+    }
+  }
+  document.getElementById("google").addEventListener("click", function(){ oauth("google"); });
+  document.getElementById("github").addEventListener("click", function(){ oauth("github"); });
+
+  document.getElementById("form").addEventListener("submit", async function(e){
+    e.preventDefault();
+    var email = emailEl.value.trim(), pw = pwEl.value;
+    if (!email || !pw){ showMsg("err", "Enter your email and password."); return; }
+    if (mode === "signup" && pw.length < 6){ showMsg("err", "Password must be at least 6 characters."); return; }
+    if (!sb){ showMsg("err", "Couldn't reach the sign-in service. Check your connection and reload."); return; }
+    submitEl.disabled = true; var old = submitEl.textContent; submitEl.textContent = "Working…"; alertEl.innerHTML = "";
+    try {
+      if (mode === "signup"){
+        var s = await sb.auth.signUp({ email: email, password: pw });
+        if (s.error) throw s.error;
+        if (s.data && s.data.user && !s.data.session){
+          showMsg("ok", "Account created! Check your email to confirm, then sign in.");
+          setMode("signin"); submitEl.disabled = false; submitEl.textContent = "Sign in"; return;
+        }
+        window.location.replace(APP_URL);
+      } else {
+        var i = await sb.auth.signInWithPassword({ email: email, password: pw });
+        if (i.error) throw i.error;
+        window.location.replace(APP_URL);
+      }
+    } catch (err){
+      var m = (err && err.message) || "Something went wrong.";
+      if (/invalid login/i.test(m)) m = "Incorrect email or password.";
+      showMsg("err", m);
+      submitEl.disabled = false; submitEl.textContent = old;
+    }
+  });
+</script>
+</body>
+</html>

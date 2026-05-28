@@ -59,6 +59,7 @@
 
   /* ---------- nav ---------- */
   header.nav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.82);backdrop-filter:saturate(180%) blur(14px);border-bottom:1px solid var(--line);transition:box-shadow .25s, background .25s;}
+  .scrollbar{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,var(--accent),var(--orange));z-index:100;transition:width .1s ease-out;}
   header.nav.scrolled{box-shadow:0 6px 24px -14px rgba(30,50,80,.25);background:rgba(255,255,255,.92);}
   .nav-inner{display:flex;align-items:center;justify-content:space-between;height:68px;}
   .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:20px;letter-spacing:-.02em;}
@@ -289,6 +290,11 @@
   .price-name{font-weight:700;font-size:15px;color:var(--ink-soft);letter-spacing:.04em;text-transform:uppercase;}
   .price-amt{font-family:var(--serif);font-size:38px;font-weight:600;margin:8px 0 4px;letter-spacing:-.02em;}
   .price-amt span{font-family:var(--sans);font-size:15px;color:var(--ink-faint);font-weight:500;}
+  .price-was{font-family:var(--serif)!important;font-size:26px!important;color:var(--ink-faint)!important;font-weight:500!important;text-decoration:line-through;text-decoration-color:var(--danger);margin-right:8px;}
+  .price-now{font-family:var(--serif)!important;font-size:42px!important;color:var(--accent-deep)!important;font-weight:700!important;}
+  .price-per{font-size:15px!important;color:var(--ink-faint)!important;}
+  .price-card.pro{position:relative;overflow:hidden;transform:translateZ(0);}
+  .price-card.pro::after{content:"";position:absolute;inset:0;border-radius:22px;padding:1px;background:linear-gradient(135deg,var(--accent),transparent 60%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;}
   .price-desc{color:var(--ink-soft);font-size:14.5px;margin-bottom:18px;}
   .price-list{list-style:none;display:flex;flex-direction:column;gap:11px;margin-bottom:24px;}
   .price-list li{font-size:14.5px;color:var(--ink);}
@@ -368,6 +374,7 @@
 </style>
 </head>
 <body>
+<div id="scrollbar" class="scrollbar"></div>
 
 <header class="nav">
   <div class="wrap nav-inner">
@@ -380,8 +387,8 @@
       <a href="#faq">FAQ</a>
     </nav>
     <div class="nav-cta">
-      <a href="app.html" class="login">Log In</a>
-      <a href="app.html" class="btn btn-primary">Get started</a>
+      <a href="auth.html" class="login">Log In</a>
+      <a href="auth.html?mode=signup" class="btn btn-primary">Get started</a>
     </div>
     <button class="menu-btn" onclick="document.querySelector('.nav-links').style.display = document.querySelector('.nav-links').style.display==='flex'?'none':'flex'">☰</button>
   </div>
@@ -397,7 +404,7 @@
     <h1>Remember <span class="accent">everything</span><br>you study</h1>
     <p class="sub">Kioku turns any topic, PDF, or set of notes into smart flashcards — then schedules each one at the exact moment you're about to forget it. Less cramming, more knowing.</p>
     <div class="hero-actions">
-      <a href="app.html" class="btn btn-dark">Start studying free</a>
+      <a href="auth.html?mode=signup" class="btn btn-dark">Start studying free</a>
       <span class="guarantee">✓ <b>No credit card.</b> Your decks save to your account and sync across devices.</span>
     </div>
     <div class="hero-stats">
@@ -855,7 +862,11 @@
     <div class="faq-list reveal">
       <details class="faq-item" open>
         <summary class="faq-q">Is Kioku free to use? <span class="plus">+</span></summary>
-        <div class="faq-a">Yes — you can create an account and start studying for free. AI generation runs on a fair daily usage allowance so everyone gets a smooth experience.</div>
+        <div class="faq-a">Yes. Create a free account and you get unlimited decks, spaced repetition, exam mode, and cloud sync — with a fair daily AI allowance. Pro ($4.99/mo during early access, normally $25) raises the AI limits for heavy users.</div>
+      </details>
+      <details class="faq-item">
+        <summary class="faq-q">Do I need an account? <span class="plus">+</span></summary>
+        <div class="faq-a">Yes — Kioku saves your decks, streaks, and progress to your account so they sync across every device. Signing up takes a few seconds with Google, GitHub, or email.</div>
       </details>
       <details class="faq-item">
         <summary class="faq-q">Do I need to know anything about spaced repetition? <span class="plus">+</span></summary>
@@ -903,20 +914,25 @@
           <li>✓ Exam mode &amp; stats dashboard</li>
           <li>✓ Cloud sync across devices</li>
         </ul>
-        <a href="app.html" class="btn btn-dark" style="width:100%;margin-top:8px;">Get started free</a>
+        <a href="auth.html?mode=signup" class="btn btn-dark" style="width:100%;margin-top:8px;">Get started free</a>
       </div>
       <div class="price-card pro reveal">
-        <div class="price-badge">Coming soon</div>
+        <div class="price-badge">Launch offer</div>
         <div class="price-name">Pro</div>
-        <div class="price-amt">More AI<span>, higher limits</span></div>
-        <p class="price-desc">For power users who generate a lot.</p>
+        <div class="price-amt">
+          <span class="price-was">$25</span>
+          <span class="price-now">$4.99</span>
+          <span class="price-per">/month</span>
+        </div>
+        <p class="price-desc"><b>80% off</b> while we're in early access — locked in for life.</p>
         <ul class="price-list">
           <li>✓ Everything in Free</li>
           <li>✓ Much higher daily AI allowance</li>
           <li>✓ Priority generation</li>
+          <li>✓ Unlimited PDF &amp; image imports</li>
           <li>✓ Early access to new features</li>
         </ul>
-        <button class="btn btn-primary" style="width:100%;margin-top:8px;opacity:.7;cursor:default;">Notify me</button>
+        <a href="auth.html?mode=signup" class="btn btn-primary" style="width:100%;margin-top:8px;">Get Pro for $4.99</a>
       </div>
     </div>
   </div>
@@ -927,7 +943,7 @@
     <div class="cta-box reveal">
       <h2>Start remembering more today.</h2>
       <p>Build your first deck in under a minute — free.</p>
-      <a href="app.html" class="btn">Get started free</a>
+      <a href="auth.html?mode=signup" class="btn">Get started free</a>
     </div>
   </div>
 </section>
@@ -939,7 +955,7 @@
       <div class="foot-brand">
         <a href="#" class="logo" style="color:#fff;font-size:20px;"><span class="mark">記</span> Kioku</a>
         <p>Smart flashcards that schedule themselves, so you remember more and study less. Built for students, language learners, and anyone with something worth keeping in their head.</p>
-        <a href="app.html" class="btn btn-primary" style="margin-top:8px;">Start studying free</a>
+        <a href="auth.html?mode=signup" class="btn btn-primary" style="margin-top:8px;">Start studying free</a>
       </div>
       <div class="foot-cols">
         <div class="foot-col">
@@ -951,8 +967,8 @@
         </div>
         <div class="foot-col">
           <h4>Get started</h4>
-          <a href="app.html">Create account</a>
-          <a href="app.html">Log in</a>
+          <a href="auth.html?mode=signup">Create account</a>
+          <a href="auth.html">Log in</a>
         </div>
       </div>
     </div>
@@ -976,9 +992,15 @@
   const make = () => subjects.map(([e,t]) => `<span class="subject"><span class="e">${e}</span>${t}</span>`).join("");
   mq.innerHTML = make() + make();
 
-  // nav shadow on scroll
+  // nav shadow on scroll + scroll progress bar
   const navEl = document.querySelector("header.nav");
-  const onScroll = () => navEl.classList.toggle("scrolled", window.scrollY > 8);
+  const sbar = document.getElementById("scrollbar");
+  const onScroll = () => {
+    navEl.classList.toggle("scrolled", window.scrollY > 8);
+    const h = document.documentElement;
+    const max = h.scrollHeight - h.clientHeight;
+    sbar.style.width = (max > 0 ? (window.scrollY / max) * 100 : 0) + "%";
+  };
   window.addEventListener("scroll", onScroll, { passive: true }); onScroll();
 
   // interactive feature tabs

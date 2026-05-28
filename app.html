@@ -1551,17 +1551,18 @@ function AccountScreen({ user, onBack }) {
   };
 
   if (user) {
+    const initial = (user.email || "?").trim().charAt(0).toUpperCase();
     return (
       <div className="fade">
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
           <button className="ghost" onClick={onBack}>← Back</button>
           <h1 className="app-h1" style={S.h1}>Account</h1>
         </div>
-        <div className="panel-box" style={S.panelBox}>
-          <div style={S.panelTitle}>Signed in</div>
-          <p style={{ ...S.sub, marginTop: 0 }}>{user.email || user.id}</p>
-          <p style={S.hint}>Your decks, stats, and AI usage sync to this account and follow you across devices.</p>
-          <button className="ghost" style={{ marginTop: 10 }} onClick={() => authManager.signOut()}>Sign out</button>
+        <div className="panel-box" style={{ ...S.panelBox, maxWidth: 420, textAlign: "center" }}>
+          <div style={{ width: 56, height: 56, borderRadius: "50%", background: "var(--accent)", color: "#fff", display: "grid", placeItems: "center", fontSize: 24, fontWeight: 600, margin: "4px auto 14px" }}>{initial}</div>
+          <div style={{ fontWeight: 600, fontSize: 16 }}>{user.email || "Signed in"}</div>
+          <p style={{ ...S.hint, marginTop: 6 }}>Your decks &amp; progress sync across devices.</p>
+          <button className="ghost" style={{ marginTop: 16 }} onClick={() => authManager.signOut()}>Sign out</button>
         </div>
       </div>
     );
@@ -1569,20 +1570,15 @@ function AccountScreen({ user, onBack }) {
 
   return (
     <div className="fade">
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
         <button className="ghost" onClick={onBack}>← Back</button>
         <h1 className="app-h1" style={S.h1}>{mode === "signup" ? "Create account" : "Sign in"}</h1>
       </div>
-      <p style={S.sub}>Save your decks to the cloud and sync across devices.</p>
 
-      <div style={{ ...S.panelBox, maxWidth: 420 }}>
-        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-          <button className="ghost" style={{ flex: 1 }} onClick={() => oauth("google")}>Continue with Google</button>
-        </div>
-        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-          <button className="ghost" style={{ flex: 1 }} onClick={() => oauth("github")}>Continue with GitHub</button>
-        </div>
-        <div style={{ textAlign: "center", color: "var(--muted3)", fontSize: 12, margin: "6px 0 14px" }}>or use email</div>
+      <div style={{ ...S.panelBox, maxWidth: 380, margin: "0 auto" }}>
+        <button className="ghost" style={{ width: "100%", marginBottom: 9 }} onClick={() => oauth("google")}>Continue with Google</button>
+        <button className="ghost" style={{ width: "100%", marginBottom: 14 }} onClick={() => oauth("github")}>Continue with GitHub</button>
+        <div style={{ textAlign: "center", color: "var(--muted3)", fontSize: 12, margin: "2px 0 14px" }}>or with email</div>
 
         <input className="ta" type="email" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)}
                onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
@@ -1598,7 +1594,7 @@ function AccountScreen({ user, onBack }) {
           {busy ? "Working…" : (mode === "signup" ? "Create account" : "Sign in")}
         </button>
 
-        <div style={{ textAlign: "center", marginTop: 12, fontSize: 13 }}>
+        <div style={{ textAlign: "center", marginTop: 14, fontSize: 13 }}>
           {mode === "signup"
             ? <span style={S.hint}>Already have an account? <button className="linklike" onClick={() => { setMode("signin"); setErr(""); setMsg(""); }}>Sign in</button></span>
             : <span style={S.hint}>New here? <button className="linklike" onClick={() => { setMode("signup"); setErr(""); setMsg(""); }}>Create an account</button></span>}
@@ -1627,6 +1623,17 @@ function App() {
 
   // initialize auth once on mount
   useEffect(() => { authManager.init(); }, []);
+
+  // AUTH GATE — an account is required to use Kioku. When auth has resolved and
+  // there's no signed-in user, send them to the dedicated auth page. (If Supabase
+  // isn't configured we skip the gate so local dev still works.)
+  useEffect(() => {
+    if (!authReady) return;
+    if (SUPABASE_ENABLED && !user) {
+      const here = window.location.pathname.split("/").pop() || "";
+      window.location.replace("auth.html");
+    }
+  }, [authReady, user]);
 
   // (re)load all data whenever auth becomes ready or the signed-in user changes.
   // Reset to defaults first so signing out doesn't leak the previous account's data.
@@ -1841,6 +1848,22 @@ function App() {
   const todayK = todayKey();
   const todayReviews = log.filter((e) => todayKey(new Date(e.t)) === todayK && !e.freeze).length;
 
+  // While auth is resolving (or we're about to redirect a signed-out visitor),
+  // show a clean branded splash rather than flashing the app UI.
+  if (SUPABASE_ENABLED && (!authReady || !user)) {
+    return (
+      <div style={S.root}>
+        <style>{CSS}</style>
+        <div style={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ width: 60, height: 60, borderRadius: 16, background: "var(--accent)", color: "#fff", display: "grid", placeItems: "center", fontSize: 32, fontWeight: 600, margin: "0 auto 16px", boxShadow: "var(--shadow-md)" }}>記</div>
+            <div className="splash-spin" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={S.root}>
       <style>{CSS}</style>
@@ -1855,9 +1878,7 @@ function App() {
             <LevelChip level={levelInfo.lvl} xp={levelInfo.intoLevel} next={levelInfo.levelNeeds} />
             <StreakChip streak={liveStats.streak} freezesLeft={freezesPerMonth(levelInfo.lvl) - (stats.freezesUsed || 0)} maxFreezes={freezesPerMonth(levelInfo.lvl)} />
             {SUPABASE_ENABLED && (
-              user
-                ? <button className="icon" title={user.email || "Account"} onClick={() => setView("account")}>👤</button>
-                : <button className="ghost" style={{ padding: "4px 12px", fontSize: 13 }} onClick={() => setView("account")}>Sign in</button>
+              <button className="icon" title={user ? (user.email || "Account") : "Account"} onClick={() => setView("account")}>👤</button>
             )}
             <button className="icon" title="Settings" onClick={() => setView("settings")}>⚙</button>
           </div>
@@ -4918,6 +4939,8 @@ const CSS = `
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); }
+.splash-spin { width: 26px; height: 26px; border-radius: 50%; border: 3px solid var(--border); border-top-color: var(--accent); margin: 0 auto; animation: splashspin .7s linear infinite; }
+@keyframes splashspin { to { transform: rotate(360deg); } }
 button { font-family: inherit; cursor: pointer; border: none; border-radius: 7px; font-size: 14px; transition: background .12s, border-color .12s, opacity .12s, color .12s; color: var(--text); }
 button:active { transform: translateY(1px); }
 button:disabled { opacity: .45; cursor: not-allowed; }

@@ -19,6 +19,32 @@
   if (window.pdfjsLib) {
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
   }
+  /* ============================================================
+     PRE-REACT AUTH GUARD (fail-safe)
+     An account is required. Before React even mounts, check for a
+     cached Supabase session in localStorage. If there's no sign-in
+     token at all, redirect straight to the auth page — so a signed-out
+     visitor can never see the app, even if React/the SDK is slow or
+     blocked. (When a token IS present, React + Supabase verify it for
+     real and will bounce expired sessions to auth too.)
+     ============================================================ */
+  (function () {
+    try {
+      var onAuthPage = /auth\.html$/i.test(location.pathname);
+      if (onAuthPage) return;
+      var hasToken = false;
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        // Supabase stores its session under e.g. "sb-<projectref>-auth-token"
+        if (k && /^sb-.*-auth-token$/.test(k) && localStorage.getItem(k)) { hasToken = true; break; }
+      }
+      // OAuth redirects come back with #access_token=... in the hash — let those through
+      var hasOAuthHash = /access_token=|code=/.test(location.hash) || /code=/.test(location.search);
+      if (!hasToken && !hasOAuthHash) {
+        location.replace("auth.html");
+      }
+    } catch (e) { /* if storage is unavailable, the React gate still applies */ }
+  })();
 </script>
 <style>
 :root{
@@ -97,8 +123,15 @@ const WORKER_URL = "https://hidden-moon-64a4.steven4team.workers.dev";   // ← 
    ============================================================ */
 const SUPABASE_URL = "https://dqyyqblvkfemfqqylarl.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxeXlxYmx2a2ZlbWZxcXlsYXJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4NDIxNzksImV4cCI6MjA5NTQxODE3OX0.qyOHEXXPxSU8DONUN0CKtIZiN0U71QG9gUjeGudvIQM";
-const SUPABASE_ENABLED = !!(window.supabase && SUPABASE_URL && SUPABASE_ANON_KEY && !/YOUR-/.test(SUPABASE_URL));
+// Is this build wired to a real Supabase project? (config present, not a placeholder)
+const SUPABASE_CONFIGURED = !!(SUPABASE_URL && SUPABASE_ANON_KEY && !/YOUR-/.test(SUPABASE_URL));
+// An account is REQUIRED whenever we're configured for it. This does NOT depend on
+// the SDK having loaded — if the SDK is missing/blocked we must fail safe (send the
+// visitor to the auth page), never silently open the app to anonymous use.
+const AUTH_REQUIRED = SUPABASE_CONFIGURED;
+const SUPABASE_ENABLED = !!(window.supabase && window.supabase.createClient && SUPABASE_CONFIGURED);
 const sb = SUPABASE_ENABLED ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
 
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
@@ -1337,7 +1370,26 @@ function newCard(front, back, extra = {}) {
   };
 }
 
-// Compress an uploaded image to a small data URL for embedding in card JSON.
+// A small, genuinely useful starter deck so new users can experience studying
+// in one click. Cards are due immediately (due:0) so "study" works right away.
+function makeSampleDeck() {
+  const id = uid();
+  const pairs = [
+    ["What is spaced repetition?", "Reviewing material at increasing intervals so you study each card right before you'd forget it."],
+    ["What is active recall?", "Retrieving an answer from memory (testing yourself) instead of re-reading — it builds far stronger memories."],
+    ["What does FSRS stand for?", "Free Spaced Repetition Scheduler — the modern algorithm Kioku uses to time your reviews."],
+    ["What is a 'leech' card?", "A card you keep getting wrong. Kioku flags it so you can rewrite or suspend it."],
+    ["What is interleaving?", "Mixing different topics or problem types in one session, which improves long-term retention."],
+    ["Why grade honestly in review?", "Your grade (Again/Hard/Good/Easy) tells the scheduler when to show the card next. Honesty = better timing."],
+  ];
+  const deck = {
+    id, name: "Welcome to Kioku", subject: "Getting started", examDate: "",
+    cards: pairs.map(([f, b]) => newCard(f, b, { tags: ["intro"] })),
+  };
+  return { [id]: deck };
+}
+
+
 // Caps long side at 900px and uses JPEG ~0.8 quality to keep stored decks small.
 async function fileToCompressedDataUrl(file, maxSide = 900, quality = 0.8) {
   if (!file || !file.type || !file.type.startsWith("image/")) throw new Error("Not an image file.");
@@ -1558,15 +1610,21 @@ function AccountScreen({ user, onBack }) {
           <button className="ghost" onClick={onBack}>← Back</button>
           <h1 className="app-h1" style={S.h1}>Account</h1>
         </div>
-        <div className="panel-box" style={{ ...S.panelBox, maxWidth: 420, textAlign: "center" }}>
-          <div style={{ width: 56, height: 56, borderRadius: "50%", background: "var(--accent)", color: "#fff", display: "grid", placeItems: "center", fontSize: 24, fontWeight: 600, margin: "4px auto 14px" }}>{initial}</div>
-          <div style={{ fontWeight: 600, fontSize: 16 }}>{user.email || "Signed in"}</div>
-          <p style={{ ...S.hint, marginTop: 6 }}>Your decks &amp; progress sync across devices.</p>
-          <button className="ghost" style={{ marginTop: 16 }} onClick={() => authManager.signOut()}>Sign out</button>
+        <div className="panel-box" style={{ ...S.panelBox, maxWidth: 440, textAlign: "center" }}>
+          <div style={{ width: 64, height: 64, borderRadius: "50%", background: "linear-gradient(150deg, var(--accent), var(--accent-hover))", color: "#fff", display: "grid", placeItems: "center", fontSize: 27, fontWeight: 600, margin: "4px auto 14px", boxShadow: "var(--shadow-md)" }}>{initial}</div>
+          <div style={{ fontWeight: 600, fontSize: 17 }}>{user.email || "Signed in"}</div>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8, background: "var(--success-bg)", color: "var(--success-text)", fontSize: 12.5, fontWeight: 600, padding: "4px 12px", borderRadius: 999 }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--success)" }} /> Synced &amp; signed in
+          </div>
+          <p style={{ ...S.hint, marginTop: 14, lineHeight: 1.55 }}>Your decks, stats, and progress are saved to your account and stay in sync on every device you sign in on.</p>
+          <button className="ghost" style={{ marginTop: 18 }} onClick={() => { if (confirm("Sign out of Kioku on this device?")) authManager.signOut(); }}>Sign out</button>
         </div>
       </div>
     );
   }
+
+  // (Signed-out users never reach this screen — the auth gate sends them to
+  // auth.html. This form remains only as a defensive fallback.)
 
   return (
     <div className="fade">
@@ -1625,12 +1683,13 @@ function App() {
   useEffect(() => { authManager.init(); }, []);
 
   // AUTH GATE — an account is required to use Kioku. When auth has resolved and
-  // there's no signed-in user, send them to the dedicated auth page. (If Supabase
-  // isn't configured we skip the gate so local dev still works.)
+  // there's no signed-in user, send them to the dedicated auth page. This is keyed
+  // on AUTH_REQUIRED (not SDK availability): if Supabase failed to load we still
+  // fail safe to the auth page rather than opening the app to anonymous use.
   useEffect(() => {
+    if (!AUTH_REQUIRED) return;
     if (!authReady) return;
-    if (SUPABASE_ENABLED && !user) {
-      const here = window.location.pathname.split("/").pop() || "";
+    if (!user) {
       window.location.replace("auth.html");
     }
   }, [authReady, user]);
@@ -1850,7 +1909,7 @@ function App() {
 
   // While auth is resolving (or we're about to redirect a signed-out visitor),
   // show a clean branded splash rather than flashing the app UI.
-  if (SUPABASE_ENABLED && (!authReady || !user)) {
+  if (AUTH_REQUIRED && (!authReady || !user)) {
     return (
       <div style={S.root}>
         <style>{CSS}</style>
@@ -2033,7 +2092,8 @@ function Home({ decks, log, settings, stats, levelInfo, onCreate, onOpen, onStud
         </div>
       </div>
 
-      {/* Daily goal banner — the engagement hook */}
+      {/* Daily goal banner — only once the user actually has decks */}
+      {list.length > 0 && (
       <div style={S.goalBanner}>
         <div style={S.goalBannerTop}>
           <div>
@@ -2054,14 +2114,38 @@ function Home({ decks, log, settings, stats, levelInfo, onCreate, onOpen, onStud
             : `${settings.dailyGoal - todayReviews} more to hit your daily goal.`}
         </div>
       </div>
+      )}
 
       {list.length === 0 ? (
-        <div style={S.empty}>
-          <p>No decks yet.</p>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="ghost" onClick={onImportDoc}>Paste notes</button>
-            <button className="ghost" onClick={onGenerate}>Generate with AI</button>
-            <button className="primary" onClick={onCreate}>Create manually</button>
+        <div className="onboard">
+          <div className="onboard-hero">
+            <div className="onboard-badge">記 Welcome to Kioku</div>
+            <h2 className="onboard-h">Let's build your first deck.</h2>
+            <p className="onboard-p">Pick how you'd like to start. You can always add more cards, edit anything, or mix methods later.</p>
+          </div>
+          <div className="onboard-grid">
+            <button className="onboard-card feature" onClick={onGenerate}>
+              <div className="onboard-ic">✨</div>
+              <div className="onboard-ct">Generate with AI</div>
+              <div className="onboard-cd">Describe a topic and get a ready-made deck in seconds.</div>
+              <span className="onboard-go">Start →</span>
+            </button>
+            <button className="onboard-card" onClick={onImportDoc}>
+              <div className="onboard-ic">📄</div>
+              <div className="onboard-ct">Import notes or a PDF</div>
+              <div className="onboard-cd">Turn your own material into cards automatically.</div>
+              <span className="onboard-go">Import →</span>
+            </button>
+            <button className="onboard-card" onClick={onCreate}>
+              <div className="onboard-ic">✏️</div>
+              <div className="onboard-ct">Create manually</div>
+              <div className="onboard-cd">Write your own cards, one at a time.</div>
+              <span className="onboard-go">Create →</span>
+            </button>
+          </div>
+          <div className="onboard-sample">
+            <span>Just want to see how it works?</span>
+            <button className="linklike" onClick={() => onImport({ ...decks, ...makeSampleDeck() })}>Load a sample deck →</button>
           </div>
         </div>
       ) : (
@@ -3434,6 +3518,20 @@ function Library({ decks, onOpenDeck, onSaveDeck }) {
       </div>
 
       <div style={S.libCount}>{filtered.length} matching{filtered.length > 300 ? " · showing first 300 (narrow your filters to see more)" : ""}</div>
+      {allCards.length === 0 ? (
+        <div className="lib-empty">
+          <div className="lib-empty-ic">📚</div>
+          <div className="lib-empty-t">Your library is empty</div>
+          <div className="lib-empty-d">Cards from every deck show up here, where you can search, filter, and manage them. Create a deck to get started.</div>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="lib-empty">
+          <div className="lib-empty-ic">🔍</div>
+          <div className="lib-empty-t">No cards match these filters</div>
+          <div className="lib-empty-d">Try widening your search or clearing the filters.</div>
+          <button className="ghost" style={{ marginTop: 14 }} onClick={() => { setQ(""); setTagF(""); setTypeF("any"); setDueF("any"); setMasteryF("any"); setStatusF("active"); }}>Clear filters</button>
+        </div>
+      ) : (
       <div>
         {filtered.slice(0, 300).map((c) => {
           const faces = c.type === "cloze" ? clozeCardFaces(c) : { front: c.front, back: c.back };
@@ -3464,6 +3562,7 @@ function Library({ decks, onOpenDeck, onSaveDeck }) {
           );
         })}
       </div>
+      )}
     </div>
   );
 }
@@ -3956,7 +4055,9 @@ function Settings({ settings, onSave, onBack, decks, log, stats, onClearLog, onR
 
       <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>Backup & data</div>
-        <p style={S.hint}>Your data lives in this browser's local storage. Back it up regularly.</p>
+        <p style={S.hint}>{SUPABASE_ENABLED
+          ? "Your decks sync to your account automatically. Exporting a local copy is still a good idea before big changes."
+          : "Your data lives in this browser's local storage. Back it up regularly."}</p>
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
           <button className="primary" onClick={exportAll}>Export everything</button>
           <label className="ghost" style={{ padding: "9px 15px", display: "inline-block", borderRadius: 7, cursor: "pointer", border: "1px solid var(--border-strong)" }}>
@@ -3970,8 +4071,8 @@ function Settings({ settings, onSave, onBack, decks, log, stats, onClearLog, onR
         <div style={S.panelTitle}>Reset</div>
         <p style={S.hint}>Danger zone. None of this is undoable.</p>
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-          <button className="ghost" onClick={() => { if (confirm("Clear all review history? Your decks are kept but scheduling, streak, XP, and achievements reset.")) onClearLog(); }}>Clear review history</button>
-          <button className="ghost" onClick={() => { if (confirm("Reset achievements? They'll re-unlock as you meet the criteria again.")) onResetStats(); }}>Reset achievements</button>
+          <button className="danger-btn" onClick={() => { if (confirm("Clear all review history? Your decks are kept but scheduling, streak, XP, and achievements reset.")) onClearLog(); }}>Clear review history</button>
+          <button className="danger-btn" onClick={() => { if (confirm("Reset achievements? They'll re-unlock as you meet the criteria again.")) onResetStats(); }}>Reset achievements</button>
         </div>
       </div>
     </div>
@@ -5057,9 +5158,48 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .dropzone { padding: 18px 12px !important; }
 }
 
+/* ---- destructive (danger zone) buttons ---- */
+.danger-btn { background: var(--surface); color: var(--danger-text); border: 1px solid var(--danger-border); padding: 9px 15px; font-weight: 500; }
+.danger-btn:hover:not(:disabled) { background: var(--danger-bg); border-color: var(--danger); }
+
+/* ---- library empty states ---- */
+.lib-empty { text-align: center; padding: 48px 20px; color: var(--muted); }
+.lib-empty-ic { font-size: 42px; margin-bottom: 10px; opacity: .9; }
+.lib-empty-t { font-size: 18px; font-weight: 700; color: var(--text); }
+.lib-empty-d { font-size: 14.5px; line-height: 1.6; max-width: 380px; margin: 8px auto 0; }
+
+/* ---- first-run onboarding ---- */
+.onboard { animation: fadeUp .4s ease; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.onboard-hero { text-align: center; max-width: 540px; margin: 12px auto 28px; }
+.onboard-badge { display: inline-block; background: var(--accent-bg); color: var(--accent); font-weight: 600; font-size: 13px; padding: 6px 14px; border-radius: 999px; margin-bottom: 16px; }
+.onboard-h { font-size: 28px; font-weight: 700; margin: 0 0 8px; letter-spacing: -.02em; color: var(--text); }
+.onboard-p { color: var(--muted); font-size: 15.5px; line-height: 1.6; margin: 0; }
+.onboard-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.onboard-card { text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 22px; cursor: pointer; transition: transform .15s, box-shadow .2s, border-color .2s; display: flex; flex-direction: column; gap: 6px; }
+.onboard-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); border-color: var(--accent); }
+.onboard-card.feature { background: linear-gradient(160deg, var(--accent-bg), var(--surface)); border-color: var(--accent); }
+.onboard-ic { font-size: 26px; margin-bottom: 6px; }
+.onboard-ct { font-weight: 700; font-size: 16px; color: var(--text); }
+.onboard-cd { color: var(--muted); font-size: 13.5px; line-height: 1.5; flex: 1; }
+.onboard-go { color: var(--accent); font-weight: 600; font-size: 13.5px; margin-top: 8px; }
+.onboard-sample { text-align: center; margin-top: 22px; color: var(--muted); font-size: 14px; display: flex; gap: 8px; align-items: center; justify-content: center; flex-wrap: wrap; }
+.onboard-sample .linklike { text-decoration: none; font-weight: 600; }
+.onboard-sample .linklike:hover { text-decoration: underline; }
+@media (max-width: 640px) { .onboard-grid { grid-template-columns: 1fr; } }
+
 /* KaTeX: keep block formulas from overflowing narrow cards; tidy spacing. */
 .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; max-width: 100%; }
 .katex { font-size: 1.05em; }
+
+/* Accessibility: visible keyboard focus ring (mouse users don't see it) */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+button:focus:not(:focus-visible) { outline: none; }
+
+/* Respect reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+}
 `;
 
 /* Top-level error boundary: if anything throws during render, show a calm

@@ -261,6 +261,12 @@ const accountStore = (function () {
   let cache = null;         // in-memory copy of the cloud row's data object
   let loaded = false;
   let saveTimer = null;
+  let autoSync = true;      // when false, changes stay local until "Sync now"
+  let pending = false;      // unsynced changes exist
+  const listeners = new Set(); // notified on pending/sync state change
+
+  function notify() { listeners.forEach((fn) => { try { fn({ pending, autoSync, syncing }); } catch (e) {} }); }
+  let syncing = false;
 
   async function loadCloud() {
     if (!user || !sb) { cache = null; loaded = false; return; }
@@ -273,8 +279,12 @@ const accountStore = (function () {
   }
   async function flush() {
     if (!user || !sb || !cache) return;
-    try { await sb.from("user_data").upsert({ user_id: user.id, data: cache, updated_at: new Date().toISOString() }); }
-    catch (e) {}
+    syncing = true; notify();
+    try {
+      await sb.from("user_data").upsert({ user_id: user.id, data: cache, updated_at: new Date().toISOString() });
+      pending = false;
+    } catch (e) { /* keep pending=true so a later sync retries */ }
+    syncing = false; notify();
   }
   function scheduleFlush() { clearTimeout(saveTimer); saveTimer = setTimeout(flush, 400); }
   async function flushNow() { clearTimeout(saveTimer); saveTimer = null; await flush(); }
@@ -285,16 +295,28 @@ const accountStore = (function () {
       // flush any pending writes for the OUTGOING user before we swap accounts
       if (user && sb) { try { await flushNow(); } catch (e) {} }
       user = u;
-      cache = null; loaded = false;
+      cache = null; loaded = false; pending = false;
       clearTimeout(saveTimer); saveTimer = null;
       if (user) await loadCloud();
+      notify();
     },
     isCloud() { return !!user && !!sb; },
     currentUser() { return user; },
+    setAutoSync(on) {
+      autoSync = !!on;
+      if (autoSync && pending) scheduleFlush(); // turning it back on pushes queued changes
+      notify();
+    },
+    getAutoSync() { return autoSync; },
+    getSyncState() { return { pending, autoSync, syncing }; },
+    onSyncChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+    async syncNow() {
+      if (!this.isCloud()) return { ok: false, reason: "local" };
+      await flushNow();
+      return { ok: true };
+    },
     // One-time migration: push the device's existing local data into a fresh
     // cloud account, BUT only the very first time anyone signs in on this device.
-    // Without that guard, signing into a second account on a shared/family
-    // device would push the first account's leftover local data into it.
     async seedFromLocal() {
       if (!user || !sb) return false;
       try {
@@ -330,14 +352,17 @@ const accountStore = (function () {
         if (!loaded) await loadCloud();
         cache = cache || {};
         cache[key] = value;
-        scheduleFlush();
+        // always keep a local backup so nothing is lost if sync is off / fails
+        try { localStore.set(key, value); } catch (e) {}
+        if (autoSync) scheduleFlush();
+        else { pending = true; notify(); }
         return { ok: true };
       }
       return localStore.set(key, value);
     },
     async remove(key) {
       if (this.isCloud() && CLOUD_KEYS.has(key)) {
-        if (cache) { delete cache[key]; scheduleFlush(); }
+        if (cache) { delete cache[key]; if (autoSync) scheduleFlush(); else { pending = true; notify(); } }
         return { ok: true };
       }
       return localStore.remove(key);
@@ -616,6 +641,30 @@ const ACHIEVEMENTS = [
   { id: "examAce",     icon: "🏅", name: "Top of the Class",  desc: "Score 100% on an Exam (5+ questions)",            group: "Features", test: (s) => !!s.examAce },
   { id: "imageCard",   icon: "🖼️", name: "Visual Learner",     desc: "Attach an image to a card",                       group: "Features", test: (s) => !!s.usedCardImages },
   { id: "cloze1st",    icon: "🧩", name: "Cloze Caller",      desc: "Create a cloze-deletion card",                    group: "Features", test: (s) => !!s.usedCloze },
+  { id: "lecture1",    icon: "🎙️", name: "Note to Self",        desc: "Record and transcribe a lecture",                group: "Features", test: (s) => !!s.lectureUsed },
+  { id: "link1",       icon: "🔗", name: "Web Scholar",        desc: "Build a deck from a YouTube or website link",     group: "Features", test: (s) => !!s.linkImported },
+  { id: "examReg",     icon: "📈", name: "Test Driver",        desc: "Complete 5 exam simulations",                     group: "Features", test: (s) => (s.examCount || 0) >= 5 },
+  { id: "examPro",     icon: "🧪", name: "Exam Veteran",       desc: "Complete 25 exam simulations",                    group: "Features", test: (s) => (s.examCount || 0) >= 25 },
+
+  // --- Multiplayer / Worlds ---
+  { id: "shareDeck",   icon: "🎁", name: "Generous Scholar",   desc: "Share a deck with a friend",                      group: "Multiplayer", test: (s) => !!s.deckShared },
+  { id: "getDeck",     icon: "📥", name: "Knowledge Trader",   desc: "Import a friend's shared deck",                    group: "Multiplayer", test: (s) => !!s.deckImported },
+  { id: "linkWorld",   icon: "🧠", name: "Mind Linked",        desc: "Link with a friend's Brain World",                group: "Multiplayer", test: (s) => !!s.worldLinked },
+
+  // --- Dedication (distinct days, comebacks, perfect days) ---
+  { id: "days7",       icon: "📅", name: "Regular",            desc: "Study on 7 different days",                       group: "Dedication", test: (s) => (s.distinctDays || 0) >= 7 },
+  { id: "days30",      icon: "🗓️", name: "Committed",           desc: "Study on 30 different days",                      group: "Dedication", test: (s) => (s.distinctDays || 0) >= 30 },
+  { id: "days100",     icon: "🏔️", name: "Devoted",             desc: "Study on 100 different days",                     group: "Dedication", test: (s) => (s.distinctDays || 0) >= 100 },
+  { id: "perfectDay",  icon: "🌟", name: "Perfect Day",        desc: "20+ reviews in a day, all Good or Easy",          group: "Dedication", test: (s) => !!s.perfectDay },
+  { id: "comeback",    icon: "🔄", name: "Comeback Kid",       desc: "Return to study after a 2-week break",            group: "Dedication", test: (s) => !!s.comeback },
+  { id: "weekend4",    icon: "🏖️", name: "Weekend Regular",     desc: "Study 4 full weekends (Sat + Sun)",               group: "Dedication", test: (s) => (s.weekendCount || 0) >= 4 },
+  { id: "clock",       icon: "🕰️", name: "Around the Clock",    desc: "Study in the morning, afternoon, evening & night", group: "Dedication", test: (s) => !!s.aroundClock },
+
+  // --- Scholarship (breadth + very mature cards) ---
+  { id: "subj3",       icon: "📗", name: "Triple Major",       desc: "Have decks in 3 different subjects",              group: "Scholarship", test: (s) => (s.subjectCount || 0) >= 3 },
+  { id: "subj6",       icon: "📚", name: "Generalist",         desc: "Have decks in 6 different subjects",              group: "Scholarship", test: (s) => (s.subjectCount || 0) >= 6 },
+  { id: "ancient100",  icon: "🗿", name: "Long-Term Memory",   desc: "Get 100 cards to a 100+ day interval",            group: "Scholarship", test: (s) => (s.ancientCards || 0) >= 100 },
+  { id: "examPerfectScale", icon: "🎖️", name: "Top Marks",      desc: "Score 95%+ on an exam simulation",               group: "Scholarship", test: (s) => (s.bestExamPct || 0) >= 95 },
 ];
 
 // --- Level perks: levels give meaningful unlocks ---
@@ -703,25 +752,71 @@ function computeStats(log, decks, flags) {
 
   // mature cards = review state with interval >= 21 days (Anki convention)
   const matureCards = cards.filter((c) => (c.phase || "new") === "review" && (c.interval || 0) >= 21).length;
+  // very mature (interval >= 100 days)
+  const ancientCards = cards.filter((c) => (c.phase || "new") === "review" && (c.interval || 0) >= 100).length;
 
   // detect any cloze and any card-image use in the library
   const usedCloze = cards.some((c) => c.type === "cloze");
   const usedCardImages = cards.some((c) => !!c.frontImage || !!c.backImage);
 
+  // total distinct days studied (lifetime)
+  const distinctDays = days.size;
+
+  // a "perfect day": 20+ reviews in a day, all Good/Easy
+  let perfectDay = false;
+  for (const k of Object.keys(dayCounts)) {
+    if ((dayCounts[k] || 0) >= 20) {
+      const es = log.filter((e) => todayKey(new Date(e.t)) === k);
+      if (es.length >= 20 && es.every((e) => e.q >= 2)) { perfectDay = true; break; }
+    }
+  }
+
+  // distinct weekends studied (Sat+Sun both)
+  let weekendCount = 0;
+  for (const d of dayDates) {
+    if (d.getDay() === 6) { const sun = new Date(d); sun.setDate(d.getDate() + 1); if (days.has(todayKey(sun))) weekendCount++; }
+  }
+
+  // comeback: studied today after a gap of 14+ days since the previous study day
+  let comeback = false;
+  if (days.has(todayKey(new Date()))) {
+    const sorted = dayDates.map((d) => d.getTime()).sort((a, b) => a - b);
+    for (let i = 1; i < sorted.length; i++) {
+      if ((sorted[i] - sorted[i - 1]) / 86400000 >= 14) { comeback = true; break; }
+    }
+  }
+
+  // studied across all parts of the day (morning <12, afternoon 12-18, evening 18-24, night 0-4) lifetime
+  const hoursSeen = new Set(log.map((e) => new Date(e.t).getHours()));
+  const partsSeen = new Set();
+  hoursSeen.forEach((h) => { if (h < 4) partsSeen.add("night"); else if (h < 12) partsSeen.add("morning"); else if (h < 18) partsSeen.add("afternoon"); else partsSeen.add("evening"); });
+  const aroundClock = partsSeen.size >= 4;
+
+  // distinct subjects across decks
+  const subjects = new Set(); Object.values(decks).forEach((d) => { if (d.subject) subjects.add(d.subject); });
+  const subjectCount = subjects.size;
+
   return {
     totalReviews: log.length,
     totalCards: cards.length,
     totalDecks: Object.keys(decks).length,
-    matureCards,
+    matureCards, ancientCards,
     streak, maxDayReviews, retention100,
     longestGoodRun: best, goalStreak,
     decksStudied, studiedNight, studiedEarly, fastDay, weekendDouble,
     usedCloze, usedCardImages,
+    distinctDays, perfectDay, weekendCount, comeback, aroundClock, subjectCount,
     importedPdf: !!(flags && flags.importedPdf),
     importedImage: !!(flags && flags.importedImage),
     tutorUses: (flags && flags.tutorUses) || 0,
     bestExamPct: (flags && flags.bestExamPct) || 0,
     examAce: !!(flags && flags.examAce),
+    examCount: (flags && flags.examCount) || 0,
+    lectureUsed: !!(flags && flags.lectureUsed),
+    linkImported: !!(flags && flags.linkImported),
+    deckShared: !!(flags && flags.deckShared),
+    deckImported: !!(flags && flags.deckImported),
+    worldLinked: !!(flags && flags.worldLinked),
   };
 }
 function earnedAchievements(stats) { return ACHIEVEMENTS.filter((a) => a.test(stats)).map((a) => a.id); }
@@ -1670,7 +1765,7 @@ function App() {
     dailyGoal: 20, newPerDay: 20, darkMode: false, ttsAuto: false,
     typeAnswer: false, soundOn: true, ttsVoice: "", ttsStyle: "natural",
   });
-  const [stats, setStats] = useState({ xp: 0, achievements: [], freezesUsed: 0, freezesUsedAt: [], importedPdf: false, importedImage: false, tutorUses: 0, bestExamPct: 0, examAce: false, freezeRefillMonth: "" });
+  const [stats, setStats] = useState({ xp: 0, achievements: [], freezesUsed: 0, freezesUsedAt: [], importedPdf: false, importedImage: false, tutorUses: 0, bestExamPct: 0, examAce: false, examCount: 0, lectureUsed: false, linkImported: false, deckShared: false, deckImported: false, worldLinked: false, freezeRefillMonth: "" });
   const [examHistory, setExamHistory] = useState([]);
   const [world, setWorld] = useState(null);
   const [loaded, setLoaded] = useState(false);
@@ -1713,8 +1808,8 @@ function App() {
         if (!alive) return;
         setDecks(d && d.value ? JSON.parse(d.value) : {});
         setLog(l && l.value ? JSON.parse(l.value) : []);
-        setSettings((cur) => ({ dailyGoal: 20, newPerDay: 20, darkMode: cur.darkMode, ttsAuto: false, typeAnswer: false, soundOn: true, ttsVoice: "", ttsStyle: "natural", ...(s && s.value ? JSON.parse(s.value) : {}) }));
-        setStats({ xp: 0, achievements: [], freezesUsed: 0, freezesUsedAt: [], importedPdf: false, importedImage: false, tutorUses: 0, bestExamPct: 0, examAce: false, freezeRefillMonth: "", ...(st && st.value ? JSON.parse(st.value) : {}) });
+        setSettings((cur) => ({ dailyGoal: 20, newPerDay: 20, darkMode: cur.darkMode, ttsAuto: false, typeAnswer: false, soundOn: true, ttsVoice: "", ttsStyle: "natural", autoSync: true, ...(s && s.value ? JSON.parse(s.value) : {}) }));
+        setStats({ xp: 0, achievements: [], freezesUsed: 0, freezesUsedAt: [], importedPdf: false, importedImage: false, tutorUses: 0, bestExamPct: 0, examAce: false, examCount: 0, lectureUsed: false, linkImported: false, deckShared: false, deckImported: false, worldLinked: false, freezeRefillMonth: "", ...(st && st.value ? JSON.parse(st.value) : {}) });
         setExamHistory(eh && eh.value ? JSON.parse(eh.value) : []);
         setWorld(w && w.value ? JSON.parse(w.value) : null);
       } catch (e) {}
@@ -1727,6 +1822,11 @@ function App() {
   useEffect(() => {
     document.body.classList.toggle("dark", !!settings.darkMode);
   }, [settings.darkMode]);
+
+  // apply auto-sync preference to the storage layer
+  useEffect(() => {
+    if (typeof accountStore.setAutoSync === "function") accountStore.setAutoSync(settings.autoSync !== false);
+  }, [settings.autoSync]);
 
   // keep the TTS engine in sync with the chosen voice + style
   useEffect(() => {
@@ -1820,7 +1920,9 @@ function App() {
   const liveStats = useMemo(() => computeStats(log.filter((e) => !e.freeze), decks, {
     dailyGoal: settings.dailyGoal, importedPdf: stats.importedPdf, importedImage: stats.importedImage,
     tutorUses: stats.tutorUses, bestExamPct: stats.bestExamPct, examAce: stats.examAce,
-  }), [log, decks, settings.dailyGoal, stats.importedPdf, stats.importedImage, stats.tutorUses, stats.bestExamPct, stats.examAce]);
+    examCount: stats.examCount, lectureUsed: stats.lectureUsed, linkImported: stats.linkImported,
+    deckShared: stats.deckShared, deckImported: stats.deckImported, worldLinked: stats.worldLinked,
+  }), [log, decks, settings.dailyGoal, stats.importedPdf, stats.importedImage, stats.tutorUses, stats.bestExamPct, stats.examAce, stats.examCount, stats.lectureUsed, stats.linkImported, stats.deckShared, stats.deckImported, stats.worldLinked]);
 
   const lastAchsRef = useRef(null);
   useEffect(() => {
@@ -1892,6 +1994,14 @@ function App() {
     if (pct === 100 && qCount >= 5) patch.examAce = true;
     if (Object.keys(patch).length) persistStats({ ...stats, ...patch });
   };
+  // set a boolean (or increment) achievement flag once
+  const markFlag = useCallback((key, inc = false) => {
+    setStats((prev) => {
+      if (inc) { const next = { ...prev, [key]: (prev[key] || 0) + 1 }; window.storage.set("stats", JSON.stringify(next)).catch(() => {}); return next; }
+      if (prev[key]) return prev;
+      const next = { ...prev, [key]: true }; window.storage.set("stats", JSON.stringify(next)).catch(() => {}); return next;
+    });
+  }, []);
   const logReview = (entry) => {
     const next = [...log, entry];
     persist(null, next.length > 10000 ? next.slice(-10000) : next);
@@ -1972,18 +2082,24 @@ function App() {
           <Home decks={decks} log={log} settings={settings} stats={stats} levelInfo={levelInfo}
                 onCreate={createDeck} onOpen={(id) => { setActiveId(id); setView("edit"); }}
                 onStudy={openStudy} onDelete={deleteDeck}
-                onImport={(d) => persist(d)} onGenerate={() => setView("generate")} onImportDoc={() => setView("import")} onAIImport={() => setView("aiimport")} />
+                onImport={(d) => persist(d)} onGenerate={() => setView("generate")} onImportDoc={() => setView("import")} onAIImport={() => setView("aiimport")} onLecture={() => setView("lecture")} />
         ) : view === "generate" ? (
           <Generate onSave={(n, c) => saveGenerated(n, c)} onCancel={() => setView("home")} />
         ) : view === "import" ? (
           <ImportDoc onSave={(n, c, fromPdf, fromImage) => saveGenerated(n, c, "", fromPdf, fromImage)} onCancel={() => setView("home")} />
         ) : view === "aiimport" ? (
-          <AIImport onSave={(n, c, subject) => saveGenerated(n, c, subject || "")} onCancel={() => setView("home")} />
+          <AIImport onSave={(n, c, subject) => { markFlag("linkImported"); saveGenerated(n, c, subject || ""); }} onCancel={() => setView("home")} />
+        ) : view === "lecture" ? (
+          <LectureRecorder onSave={(n, c, subject) => { markFlag("lectureUsed"); saveGenerated(n, c, subject || ""); }} onCancel={() => setView("home")} />
         ) : view === "exams" ? (
-          <ExamSim decks={decks} examHistory={examHistory} onSaveHistory={persistExamHistory} onBack={() => setView("home")} />
+          <ExamSim decks={decks} examHistory={examHistory}
+                   onSaveHistory={(h) => { persistExamHistory(h); markFlag("examCount", true); }}
+                   onBack={() => setView("home")} />
         ) : view === "worlds" ? (
           <Worlds decks={decks} log={log} world={world} onSaveWorld={persistWorld}
-                  onImportDeck={(n, c, subject) => saveGenerated(n, c, subject || "")} onBack={() => setView("home")} />
+                  onImportDeck={(n, c, subject) => { markFlag("deckImported"); saveGenerated(n, c, subject || ""); }}
+                  onShareDeck={() => markFlag("deckShared")} onLinkWorld={() => markFlag("worldLinked")}
+                  onBack={() => setView("home")} />
         ) : view === "library" ? (
           <Library decks={decks} onOpenDeck={(id) => { setActiveId(id); setView("edit"); }} onSaveDeck={saveDeck} />
         ) : view === "dashboard" ? (
@@ -2050,7 +2166,7 @@ function StreakChip({ streak, freezesLeft, maxFreezes }) {
 }
 
 /* ---------------- HOME ---------------- */
-function Home({ decks, log, settings, stats, levelInfo, onCreate, onOpen, onStudy, onDelete, onImport, onGenerate, onImportDoc, onAIImport }) {
+function Home({ decks, log, settings, stats, levelInfo, onCreate, onOpen, onStudy, onDelete, onImport, onGenerate, onImportDoc, onAIImport, onLecture }) {
   const list = Object.values(decks);
   const now = Date.now();
   const fileRef = useRef();
@@ -2111,6 +2227,7 @@ function Home({ decks, log, settings, stats, levelInfo, onCreate, onOpen, onStud
           <button className="ghost" onClick={() => fileRef.current.click()}>Import file</button>
           <button className="ghost" onClick={onImportDoc}>From notes / PDF</button>
           <button className="ghost" onClick={onAIImport}>From a link</button>
+          <button className="ghost" onClick={onLecture}>🎙 Record lecture</button>
           <button className="ghost" onClick={onGenerate}>Generate with AI</button>
           <button className="primary" onClick={onCreate}>+ New deck</button>
           <input ref={fileRef} type="file" accept=".json" hidden onChange={importDeck} />
@@ -2166,6 +2283,12 @@ function Home({ decks, log, settings, stats, levelInfo, onCreate, onOpen, onStud
               <div className="onboard-ct">Import from a link</div>
               <div className="onboard-cd">Paste a YouTube video or website and get a full study pack.</div>
               <span className="onboard-go">Paste a link →</span>
+            </button>
+            <button className="onboard-card" onClick={onLecture}>
+              <div className="onboard-ic">🎙</div>
+              <div className="onboard-ct">Record a lecture</div>
+              <div className="onboard-cd">Kioku transcribes it live, then makes a guide or cards.</div>
+              <span className="onboard-go">Start recording →</span>
             </button>
             <button className="onboard-card" onClick={onCreate}>
               <div className="onboard-ic">✏️</div>
@@ -3860,7 +3983,15 @@ function Achievements({ stats, earned, levelInfo, xpTotal }) {
     const bucket = earnedSet.has(a.id) ? unlockedByGroup : lockedByGroup;
     (bucket[g] = bucket[g] || []).push(a);
   }
-  const orderedGroups = ["Milestones", "Streaks", "Creator", "Mastery", "Habits", "Lifestyle", "Features", "Other"];
+  // Preferred display order, then append any other groups that exist (so new
+  // achievement groups always render even if they're not in this list).
+  const preferredOrder = ["Milestones", "Streaks", "Creator", "Mastery", "Habits", "Lifestyle", "Features", "Multiplayer", "Dedication", "Scholarship", "Other"];
+  const allGroups = new Set();
+  for (const a of ACHIEVEMENTS) allGroups.add(a.group || "Other");
+  const orderedGroups = [
+    ...preferredOrder.filter((g) => allGroups.has(g)),
+    ...[...allGroups].filter((g) => !preferredOrder.includes(g)),
+  ];
 
   const lvl = levelInfo ? levelInfo.lvl : 1;
   const nextLevelXp = levelInfo ? levelInfo.levelNeeds : 50;
@@ -3972,6 +4103,44 @@ function Achievements({ stats, earned, levelInfo, xpTotal }) {
 }
 
 /* ---------------- SETTINGS ---------------- */
+function SyncSettings({ settings, save }) {
+  const [state, setState] = useState(accountStore.getSyncState ? accountStore.getSyncState() : { pending: false, autoSync: true, syncing: false });
+  const [msg, setMsg] = useState("");
+  useEffect(() => {
+    if (!accountStore.onSyncChange) return;
+    return accountStore.onSyncChange((st) => setState(st));
+  }, []);
+  const auto = settings.autoSync !== false;
+  const doSync = async () => {
+    setMsg("");
+    const r = await accountStore.syncNow();
+    setMsg(r && r.ok ? "Synced ✓" : "Couldn't sync right now.");
+    setTimeout(() => setMsg(""), 2500);
+  };
+  return (
+    <div className="panel-box" style={S.panelBox}>
+      <div style={S.panelTitle}>Cloud sync</div>
+      <SettingRow label="Auto-sync" hint="Save changes to your account automatically as you study.">
+        <Switch on={auto} onChange={(v) => save({ autoSync: v })} />
+      </SettingRow>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+        <button className="ghost" onClick={doSync} disabled={state.syncing}>{state.syncing ? "Syncing…" : "Sync now"}</button>
+        <span style={S.hint}>
+          {state.syncing ? "Uploading…"
+            : msg ? msg
+            : auto ? (state.pending ? "Changes pending…" : "All changes synced.")
+            : (state.pending ? "You have unsynced changes — tap Sync now." : "Up to date.")}
+        </span>
+        <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, ...S.hint }}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: state.pending ? "var(--warn)" : "var(--success)" }} />
+          {state.pending ? "Pending" : "Synced"}
+        </span>
+      </div>
+      {!auto && <p style={{ ...S.hint, marginTop: 8 }}>With auto-sync off, your work is still saved on this device — it just won't reach your other devices until you tap Sync now.</p>}
+    </div>
+  );
+}
+
 function Settings({ settings, onSave, onBack, decks, log, stats, onClearLog, onResetStats }) {
   const [s, setS] = useState(settings);
   const save = (patch) => { const next = { ...s, ...patch }; setS(next); onSave(next); };
@@ -4083,6 +4252,8 @@ function Settings({ settings, onSave, onBack, decks, log, stats, onClearLog, onR
           <Switch on={s.darkMode} onChange={(v) => save({ darkMode: v })} />
         </SettingRow>
       </div>
+
+      {SUPABASE_ENABLED && <SyncSettings settings={s} save={save} />}
 
       <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>Backup & data</div>
@@ -5091,6 +5262,329 @@ function extractJSONObject(text) {
   try { return JSON.parse(t.slice(s, e + 1)); } catch { return null; }
 }
 
+
+/* Minimal, safe markdown -> HTML for AI-generated study guides.
+   Escapes HTML first, then renders headings, bold/italic, and bullet/number lists. */
+function mdToHtml(md) {
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (s) => esc(s)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+  const lines = String(md || "").split("\n");
+  let html = "", listType = null;
+  const closeList = () => { if (listType) { html += `</${listType}>`; listType = null; } };
+  for (let raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    let m;
+    if ((m = line.match(/^\s*#{3,}\s+(.*)/))) { closeList(); html += `<h4>${inline(m[1])}</h4>`; }
+    else if ((m = line.match(/^\s*##\s+(.*)/))) { closeList(); html += `<h3>${inline(m[1])}</h3>`; }
+    else if ((m = line.match(/^\s*#\s+(.*)/))) { closeList(); html += `<h2>${inline(m[1])}</h2>`; }
+    else if ((m = line.match(/^\s*[-*•]\s+(.*)/))) { if (listType !== "ul") { closeList(); html += "<ul>"; listType = "ul"; } html += `<li>${inline(m[1])}</li>`; }
+    else if ((m = line.match(/^\s*\d+[.)]\s+(.*)/))) { if (listType !== "ol") { closeList(); html += "<ol>"; listType = "ol"; } html += `<li>${inline(m[1])}</li>`; }
+    else if (line.trim() === "") { closeList(); }
+    else { closeList(); html += `<p>${inline(line)}</p>`; }
+  }
+  closeList();
+  return html;
+}
+
+/* =========================================================
+   0) LECTURE RECORDER — hear a lecture live, transcribe every word,
+   then turn the transcript into a study guide or flashcards.
+   Uses the browser SpeechRecognition API for on-device live captions.
+   ========================================================= */
+function LectureRecorder({ onSave, onCancel }) {
+  const supported = typeof window !== "undefined" &&
+    (window.SpeechRecognition || window.webkitSpeechRecognition);
+
+  const [recording, setRecording] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [finalText, setFinalText] = useState("");     // committed transcript
+  const [interim, setInterim] = useState("");         // live, not-yet-final words
+  const [elapsed, setElapsed] = useState(0);
+  const [phase, setPhase] = useState("record");       // record | building | result
+  const [buildKind, setBuildKind] = useState("");     // guide | cards
+  const [error, setError] = useState("");
+  const [guide, setGuide] = useState("");
+  const [cards, setCards] = useState([]);
+  const [title, setTitle] = useState("");
+  const [subject, setSubject] = useState("");
+  const usage = useUsage();
+
+  const recogRef = useRef(null);
+  const wantOnRef = useRef(false);     // should we keep restarting (Chrome stops every ~minute)
+  const timerRef = useRef(null);
+  const startedAtRef = useRef(0);
+  const baseElapsedRef = useRef(0);
+  const finalRef = useRef("");
+
+  useEffect(() => () => { stopAll(); }, []);
+
+  function startTimer() {
+    startedAtRef.current = Date.now();
+    timerRef.current = setInterval(() => {
+      setElapsed(baseElapsedRef.current + Math.floor((Date.now() - startedAtRef.current) / 1000));
+    }, 500);
+  }
+  function pauseTimer() {
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    baseElapsedRef.current += Math.floor((Date.now() - startedAtRef.current) / 1000);
+  }
+
+  function makeRecognizer() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const r = new SR();
+    r.continuous = true;
+    r.interimResults = true;
+    r.lang = (navigator.language || "en-US");
+    r.onresult = (e) => {
+      let interimStr = "";
+      let added = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const res = e.results[i];
+        if (res.isFinal) added += res[0].transcript;
+        else interimStr += res[0].transcript;
+      }
+      if (added) {
+        finalRef.current = (finalRef.current + " " + added).replace(/\s+/g, " ").trim();
+        setFinalText(finalRef.current);
+      }
+      setInterim(interimStr);
+    };
+    r.onerror = (ev) => {
+      if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
+        setError("Microphone access was blocked. Allow the mic and try again.");
+        wantOnRef.current = false; setRecording(false); pauseTimer();
+      } else if (ev.error === "no-speech") {
+        // ignore; the auto-restart will keep it listening
+      }
+    };
+    r.onend = () => {
+      // Chrome ends the session periodically — restart if we still want to record
+      if (wantOnRef.current) { try { r.start(); } catch (e) {} }
+    };
+    return r;
+  }
+
+  async function startRec() {
+    setError("");
+    if (!supported) { setError("Live transcription isn't supported in this browser. Try Chrome on desktop or Android."); return; }
+    try {
+      // prompt for mic permission up front for a clear UX
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+        s.getTracks().forEach((t) => t.stop());
+      }
+    } catch (e) {
+      setError("Microphone access was blocked. Allow the mic and try again."); return;
+    }
+    recogRef.current = makeRecognizer();
+    wantOnRef.current = true;
+    try { recogRef.current.start(); } catch (e) {}
+    setRecording(true); setPaused(false); startTimer();
+  }
+
+  function pauseRec() {
+    wantOnRef.current = false;
+    if (recogRef.current) { try { recogRef.current.stop(); } catch (e) {} }
+    setPaused(true); setRecording(false); pauseTimer(); setInterim("");
+  }
+  function resumeRec() {
+    setError("");
+    recogRef.current = makeRecognizer();
+    wantOnRef.current = true;
+    try { recogRef.current.start(); } catch (e) {}
+    setRecording(true); setPaused(false); startTimer();
+  }
+  function stopAll() {
+    wantOnRef.current = false;
+    if (recogRef.current) { try { recogRef.current.stop(); } catch (e) {} recogRef.current = null; }
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+  }
+  function finishRec() {
+    stopAll(); setRecording(false); setPaused(false); setInterim("");
+  }
+  function reset() {
+    finishRec();
+    finalRef.current = ""; setFinalText(""); setInterim(""); setElapsed(0);
+    baseElapsedRef.current = 0; setError(""); setPhase("record"); setGuide(""); setCards([]);
+  }
+
+  const wordCount = finalText ? finalText.trim().split(/\s+/).length : 0;
+  const mmss = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+
+  async function build(kind) {
+    const transcript = finalRef.current.trim();
+    if (transcript.length < 40) { setError("The transcript is too short. Record a bit more of the lecture first."); return; }
+    finishRec();
+    setError(""); setPhase("building"); setBuildKind(kind);
+    try {
+      // get a title/subject once
+      if (!title) {
+        try {
+          const meta = await callAI(
+`Give a short title and one-word subject for a lecture with this transcript start:\n"""${transcript.slice(0, 800)}"""\nReturn ONLY JSON: {"title":"...","subject":"..."}`,
+            { maxTokens: 200 });
+          const m = extractJSONObject(meta);
+          if (m) { setTitle(m.title || "Lecture"); setSubject(m.subject || ""); }
+        } catch (e) {}
+      }
+      const chunk = transcript.slice(0, 14000); // keep prompt within limits
+      if (kind === "guide") {
+        const g = await callAI(
+`You are a study assistant. Turn this lecture transcript into a clear, well-structured study guide a student can revise from.
+Use markdown: a short overview, then sections with ## headings, bullet points for key facts, **bold** for key terms, and a "Key takeaways" list at the end. Be accurate to the transcript; fix obvious speech-to-text errors silently.
+
+Transcript:
+"""${chunk}"""`,
+          { maxTokens: 4000 });
+        setGuide(g); setPhase("result");
+      } else {
+        const arr = extractJSONArray(await callAI(
+`Turn this lecture transcript into study flashcards covering everything important.
+Each card: concise front (question/term), concise accurate back (answer). 15-25 cards. Fix speech-to-text errors silently.
+Return ONLY a JSON array, no markdown: [{"front":"...","back":"..."}]
+
+Transcript:
+"""${chunk}"""`,
+          { maxTokens: 4000 })) || [];
+        const clean = arr.filter((c) => c && c.front && c.back).map((c) => ({ front: String(c.front), back: String(c.back) }));
+        if (!clean.length) throw new Error("Couldn't build cards from this transcript. Try recording more.");
+        setCards(clean); setPhase("result");
+      }
+    } catch (e) {
+      setError((e && e.code === "DAILY_LIMIT") ? "You've hit today's AI usage limit. It resets tomorrow." : (e && e.message) || "Couldn't process the transcript.");
+      setPhase("record");
+    }
+  }
+
+  function downloadGuide() {
+    const blob = new Blob([guide], { type: "text/markdown" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = (title || "lecture") + " — study guide.md";
+    a.click(); URL.revokeObjectURL(a.href);
+  }
+
+  // ---------- RESULT ----------
+  if (phase === "result") {
+    return (
+      <div className="fade">
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+          <button className="ghost" onClick={() => setPhase("record")}>← Back to transcript</button>
+          <h1 className="app-h1" style={S.h1}>{buildKind === "guide" ? "Study guide" : "Flashcards"}</h1>
+        </div>
+        <p style={S.sub}>{title || "Lecture"}{subject ? " · " + subject : ""} · from {wordCount.toLocaleString()} words</p>
+
+        {buildKind === "guide" ? (
+          <>
+            <div className="panel-box" style={S.panelBox}>
+              <div className="lecture-guide" dangerouslySetInnerHTML={{ __html: mdToHtml(guide) }} />
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button className="primary" onClick={downloadGuide}>⬇ Download .md</button>
+              <button className="ghost" onClick={() => build("cards")}>Also make flashcards →</button>
+              <button className="ghost" onClick={reset}>New recording</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="panel-box" style={S.panelBox}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                <div style={S.panelTitle}>{cards.length} flashcards ready</div>
+                <button className="primary" onClick={() => onSave(title || "Lecture", cards, subject)}>Save as deck →</button>
+              </div>
+              <div style={{ marginTop: 8, maxHeight: 320, overflowY: "auto" }}>
+                {cards.map((c, i) => (
+                  <div key={i} style={S.aiCardPeek}>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{c.front}</div>
+                    <div style={{ ...S.hint, marginTop: 2 }}>{c.back}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button className="ghost" onClick={() => build("guide")}>Make a study guide instead →</button>
+              <button className="ghost" onClick={reset}>New recording</button>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  // ---------- BUILDING ----------
+  if (phase === "building") {
+    return (
+      <div className="fade">
+        <h1 className="app-h1" style={S.h1}>Working…</h1>
+        <div className="panel-box" style={{ ...S.panelBox, textAlign: "center" }}>
+          <div className="splash-spin" style={{ margin: "6px auto 12px" }} />
+          <div style={{ fontWeight: 600 }}>{buildKind === "guide" ? "Writing your study guide…" : "Building your flashcards…"}</div>
+          <div style={S.hint}>Reading {wordCount.toLocaleString()} words of transcript.</div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------- RECORD ----------
+  return (
+    <div className="fade">
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+        <button className="ghost" onClick={() => { finishRec(); onCancel(); }}>← Back</button>
+        <h1 className="app-h1" style={S.h1}>Record a lecture</h1>
+      </div>
+      <p style={S.sub}>Kioku listens and writes down every word live. When you're done, turn the transcript into a study guide or flashcards.</p>
+
+      {!supported && <div style={S.errorBox}>Live transcription needs the Web Speech API — it works in Chrome (desktop &amp; Android) and Edge. On unsupported browsers you can still paste notes via “From notes / PDF”.</div>}
+      {!WORKER_CONFIGURED && <div style={S.errorBox}>AI isn't connected. Set your Worker URL to turn transcripts into study material.</div>}
+      {error && <div style={S.errorBox}>{error}</div>}
+
+      <div className="panel-box" style={{ ...S.panelBox, textAlign: "center" }}>
+        <div className={"rec-orb" + (recording ? " live" : "")}>
+          <span className="rec-dot" />
+          <span className="rec-time">{mmss(elapsed)}</span>
+        </div>
+        <div style={{ ...S.hint, marginTop: 4 }}>
+          {recording ? "Listening… keep this tab open and in focus." : paused ? "Paused" : "Ready when you are."} · {wordCount.toLocaleString()} words
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 14, flexWrap: "wrap" }}>
+          {!recording && !paused && <button className="primary" disabled={!supported} onClick={startRec}>● Start recording</button>}
+          {recording && <button className="danger-btn" onClick={pauseRec}>❚❚ Pause</button>}
+          {paused && <button className="primary" onClick={resumeRec}>● Resume</button>}
+          {(recording || paused) && <button className="ghost" onClick={finishRec}>■ Stop</button>}
+          {(finalText || paused) && <button className="ghost" onClick={reset}>Clear</button>}
+        </div>
+      </div>
+
+      <div className="panel-box" style={S.panelBox}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={S.panelTitle}>Live transcript</div>
+          <span style={S.hint}>{wordCount.toLocaleString()} words</span>
+        </div>
+        <div className="lecture-transcript">
+          {finalText || interim ? (
+            <>{finalText} <span className="lecture-interim">{interim}</span></>
+          ) : (
+            <span style={S.hint}>Your transcript will appear here, word by word, as you record…</span>
+          )}
+        </div>
+        <textarea className="ta" style={{ marginTop: 8, minHeight: 70 }} placeholder="Or paste / fix transcript text here"
+          value={finalText} onChange={(e) => { finalRef.current = e.target.value; setFinalText(e.target.value); }} />
+      </div>
+
+      <div className="panel-box" style={S.panelBox}>
+        <div style={S.panelTitle}>Turn it into study material</div>
+        <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
+          <button className="primary" disabled={!WORKER_CONFIGURED || wordCount < 8} onClick={() => build("guide")}>📝 Study guide</button>
+          <button className="primary" disabled={!WORKER_CONFIGURED || wordCount < 8} onClick={() => build("cards")}>🃏 Flashcards</button>
+          <span style={{ marginLeft: "auto", ...S.hint }}>{usage.remaining.toLocaleString()} AI tokens left today</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* =========================================================
    1) AI CONTENT IMPORT  (YouTube + website links)
    ========================================================= */
@@ -5327,24 +5821,48 @@ function nextDifficulty(cur, lastCorrect, msTaken) {
   return DIFFS[Math.max(0, Math.min(DIFFS.length - 1, i))];
 }
 
-async function genExamQuestion({ subject, difficulty, avoid }) {
+async function genExamQuestion({ subject, difficulty, avoid, topics }) {
+  const topicLine = (topics && topics.length)
+    ? `Pick the question's topic from EXACTLY this list (use the closest one, copy its wording verbatim into "topic"): ${topics.join(", ")}.`
+    : `Tag the question with a short topic.`;
   const prompt =
 `You are an exam item-writer. Write ONE ${difficulty} multiple-choice question for a ${subject} exam.
 - Exactly 4 options, one correct.
 - Distractors plausible, same type/length as the answer; no "all/none of the above".
+- ${topicLine}
 - Avoid repeating any of these question stems: ${avoid.slice(-12).join(" | ") || "(none yet)"}
 Return ONLY JSON, no markdown:
-{"q":"...","options":["a","b","c","d"],"answer":"<exact correct option text>","why":"<one-sentence why the answer is correct>","topic":"<short topic tag>"}`;
+{"q":"...","options":["a","b","c","d"],"answer":"<exact correct option text>","why":"<one-sentence why the answer is correct>","topic":"<topic from the list>"}`;
   const obj = extractJSONObject(await callAI(prompt, { maxTokens: 700 }));
   if (!obj || !obj.q || !Array.isArray(obj.options) || !obj.answer) return null;
+  // snap the returned topic to the nearest allowed topic so buckets actually group
+  let topic = String(obj.topic || subject);
+  if (topics && topics.length) {
+    const lc = topic.toLowerCase();
+    const exact = topics.find((t) => t.toLowerCase() === lc);
+    const partial = topics.find((t) => lc.includes(t.toLowerCase()) || t.toLowerCase().includes(lc));
+    topic = exact || partial || topics[0];
+  }
   return {
     q: String(obj.q),
     options: obj.options.map(String),
     answer: String(obj.answer),
     why: String(obj.why || ""),
-    topic: String(obj.topic || subject),
+    topic,
     difficulty,
   };
+}
+
+// Derive a small fixed set of topics for the subject so per-topic analytics group.
+async function genExamTopics(subject) {
+  try {
+    const t = await callAI(
+`List 5-7 core topic areas a ${subject} exam would cover. Return ONLY a JSON array of short topic strings (2-4 words each), no markdown.`,
+      { maxTokens: 400 });
+    const arr = extractJSONArray(t);
+    if (arr && arr.length) return arr.map((x) => String(x)).slice(0, 7);
+  } catch (e) {}
+  return [];
 }
 
 function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
@@ -5353,7 +5871,16 @@ function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
   const [subject, setSubject] = useState("");
   const [error, setError] = useState("");
 
+  // customization
+  const [customQ, setCustomQ] = useState(null);        // null => use profile default
+  const [customMin, setCustomMin] = useState(null);
+  const [diffMode, setDiffMode] = useState("adaptive"); // adaptive | easier | medium | harder
+  const [instantFeedback, setInstantFeedback] = useState(true); // reveal answer + why after each Q
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   const profile = EXAM_PROFILES[profileKey];
+  const qCount = customQ != null ? customQ : profile.q;
+  const minutes = customMin != null ? customMin : profile.minutes;
   const subjectsFromDecks = useMemo(() => {
     const s = new Set(); Object.values(decks).forEach((d) => { if (d.subject) s.add(d.subject); }); return [...s];
   }, [decks]);
@@ -5369,6 +5896,7 @@ function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
   const diffRef = useRef("medium");
   const qStartRef = useRef(0);
   const avoidRef = useRef([]);
+  const topicsRef = useRef([]);
   const timerRef = useRef(null);
   const finishRef = useRef(null);
 
@@ -5378,14 +5906,18 @@ function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
     if (!WORKER_CONFIGURED) { setError("AI isn't connected. Set your Worker URL to run AI exams."); return; }
     setError(""); setPhase("running");
     setAnswers([]); setQuestions([]); setIdx(0); setPicked(null);
-    diffRef.current = "medium"; avoidRef.current = [];
-    setSecondsLeft(profile.minutes * 60);
+    diffRef.current = diffMode === "adaptive" ? "medium" : diffMode;
+    avoidRef.current = []; topicsRef.current = [];
+    setSecondsLeft(minutes * 60);
     timerRef.current = setInterval(() => {
       setSecondsLeft((s) => {
         if (s <= 1) { clearInterval(timerRef.current); if (finishRef.current) finishRef.current(); return 0; }
         return s - 1;
       });
     }, 1000);
+    // derive a fixed topic set first so per-topic analytics actually group
+    setGenBusy(true);
+    topicsRef.current = await genExamTopics(effSubject);
     await loadNext(true);
   }
 
@@ -5393,7 +5925,7 @@ function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
     setGenBusy(true); setPicked(null);
     let q = null;
     for (let tries = 0; tries < 3 && !q; tries++) {
-      try { q = await genExamQuestion({ subject: effSubject, difficulty: diffRef.current, avoid: avoidRef.current }); }
+      try { q = await genExamQuestion({ subject: effSubject, difficulty: diffRef.current, avoid: avoidRef.current, topics: topicsRef.current }); }
       catch (e) { if (e && e.code === "DAILY_LIMIT") { setError("Daily AI limit reached."); finish(); return; } }
     }
     setGenBusy(false);
@@ -5410,12 +5942,14 @@ function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
     const correct = opt === current.answer;
     const rec = { ...current, picked: opt, correct, ms };
     setAnswers((a) => [...a, rec]);
-    diffRef.current = nextDifficulty(current.difficulty, correct, ms);
+    if (diffMode === "adaptive") diffRef.current = nextDifficulty(current.difficulty, correct, ms);
+    // when instant feedback is OFF, jump straight to the next question
+    if (!instantFeedback) { setTimeout(() => { advance([...answers, rec]); }, 120); }
   }
 
-  async function advance() {
-    const answeredCount = answers.length;
-    if (answeredCount >= profile.q) { finish(); return; }
+  async function advance(currentAnswers) {
+    const answeredCount = (currentAnswers || answers).length;
+    if (answeredCount >= qCount) { finish(); return; }
     setIdx((i) => i + 1);
     await loadNext(false);
   }
@@ -5495,8 +6029,52 @@ function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
               ))}
             </div>
           )}
-          <div style={{ ...S.hint, marginTop: 10 }}>
-            Adaptive: questions get harder when you're fast & accurate, and ease off when you miss. {profile.name} predicts a {profile.base}–{profile.max} score.
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18, marginBottom: 4 }}>
+            <div style={S.panelTitle}>Customize</div>
+            <button className="linklike" onClick={() => setShowAdvanced((v) => !v)}>{showAdvanced ? "Hide" : "Customize ▾"}</button>
+          </div>
+
+          {showAdvanced && (
+            <div className="exam-custom">
+              <div className="exam-custom-row">
+                <label>Questions</label>
+                <div className="seg">
+                  {[5, 10, 20, 30, 50].map((n) => (
+                    <button key={n} className={"seg-btn" + (qCount === n ? " on" : "")} onClick={() => setCustomQ(n)}>{n}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="exam-custom-row">
+                <label>Time limit</label>
+                <div className="seg">
+                  {[10, 20, 30, 45, 60].map((n) => (
+                    <button key={n} className={"seg-btn" + (minutes === n ? " on" : "")} onClick={() => setCustomMin(n)}>{n}m</button>
+                  ))}
+                </div>
+              </div>
+              <div className="exam-custom-row">
+                <label>Difficulty</label>
+                <div className="seg">
+                  {[["adaptive", "Adaptive"], ["easier", "Easy"], ["medium", "Medium"], ["harder", "Hard"]].map(([k, lbl]) => (
+                    <button key={k} className={"seg-btn" + (diffMode === k ? " on" : "")} onClick={() => setDiffMode(k)}>{lbl}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="exam-custom-row">
+                <label>Feedback</label>
+                <div className="seg">
+                  <button className={"seg-btn" + (instantFeedback ? " on" : "")} onClick={() => setInstantFeedback(true)}>After each Q</button>
+                  <button className={"seg-btn" + (!instantFeedback ? " on" : "")} onClick={() => setInstantFeedback(false)}>At the end</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div style={{ ...S.hint, marginTop: 12 }}>
+            {diffMode === "adaptive"
+              ? `Adaptive: questions get harder when you're fast & accurate, and ease off when you miss.`
+              : `Fixed ${diffMode} difficulty.`} {qCount} questions · {minutes} min · {profile.name} predicts a {profile.base}–{profile.max} score.
           </div>
           <button className="primary" style={{ marginTop: 14 }} disabled={!WORKER_CONFIGURED} onClick={start}>Start {profile.name} simulation →</button>
         </div>
@@ -5526,16 +6104,16 @@ function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
       <div className="fade">
         <div className="exam-run-top">
           <button className="ghost" onClick={() => { if (confirm("End this exam now?")) finish(); }}>End</button>
-          <div className="exam-progress-wrap"><div className="exam-progress" style={{ width: `${(answeredCount / profile.q) * 100}%` }} /></div>
+          <div className="exam-progress-wrap"><div className="exam-progress" style={{ width: `${(answeredCount / qCount) * 100}%` }} /></div>
           <div className={"exam-timer" + (lowTime ? " low" : "")}>⏱ {mmss(secondsLeft)}</div>
         </div>
-        <div style={S.examQNo}>Question {Math.min(answeredCount + 1, profile.q)} of {profile.q}
+        <div style={S.examQNo}>Question {Math.min(answeredCount + 1, qCount)} of {qCount}
           <span style={S.examDiff}>{current ? current.difficulty : diffRef.current}</span>
         </div>
 
         {genBusy || !current ? (
           <div className="panel-box" style={{ ...S.panelBox, textAlign: "center", minHeight: 160, display: "grid", placeItems: "center" }}>
-            <div><div className="splash-spin" style={{ margin: "0 auto 10px" }} /><div style={S.hint}>Writing your next question…</div></div>
+            <div><div className="splash-spin" style={{ margin: "0 auto 10px" }} /><div style={S.hint}>{answeredCount === 0 ? "Preparing your exam…" : "Writing your next question…"}</div></div>
           </div>
         ) : (
           <>
@@ -5543,8 +6121,9 @@ function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
             <div style={{ display: "grid", gap: 8 }}>
               {current.options.map((o, j) => {
                 const isPicked = picked === o;
-                const right = picked != null && o === current.answer;
-                const wrong = isPicked && o !== current.answer;
+                const reveal = instantFeedback && picked != null;
+                const right = reveal && o === current.answer;
+                const wrong = reveal && isPicked && o !== current.answer;
                 return (
                   <button key={j}
                     className={"exam-opt" + (isPicked ? " picked" : "") + (right ? " right" : "") + (wrong ? " wrong" : "")}
@@ -5555,14 +6134,14 @@ function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
                 );
               })}
             </div>
-            {picked != null && (
+            {instantFeedback && picked != null && (
               <div className={"exam-explain" + (picked === current.answer ? " ok" : " no")}>
                 <b>{picked === current.answer ? "Correct." : "Not quite."}</b> {current.why}
               </div>
             )}
-            {picked != null && (
-              <button className="primary" style={{ marginTop: 14, width: "100%" }} onClick={advance}>
-                {answeredCount >= profile.q ? "Finish & see score →" : "Next question →"}
+            {instantFeedback && picked != null && (
+              <button className="primary" style={{ marginTop: 14, width: "100%" }} onClick={() => advance()}>
+                {answeredCount >= qCount ? "Finish & see score →" : "Next question →"}
               </button>
             )}
           </>
@@ -5595,18 +6174,24 @@ function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
 
       <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>Performance by topic</div>
-        {results.weak.map((w, i) => (
-          <div key={i} style={{ marginBottom: 10 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginBottom: 4 }}>
-              <span style={{ fontWeight: 600 }}>{w.t}</span><span style={S.hint}>{w.pct}% · {w.n} q</span>
-            </div>
-            <div style={{ height: 8, background: "var(--surface-2)", borderRadius: 8, overflow: "hidden" }}>
-              <div style={{ height: "100%", width: `${w.pct}%`, borderRadius: 8, background: w.pct < 50 ? "var(--danger)" : w.pct < 75 ? "var(--warn)" : "var(--success)" }} />
-            </div>
-          </div>
-        ))}
-        {results.weak.length > 0 && results.weak[0].pct < 75 && (
-          <div style={{ ...S.hint, marginTop: 6 }}>💡 Focus your next sessions on <b>{results.weak[0].t}</b> — it's your weakest area.</div>
+        {results.weak.length === 0 ? (
+          <div style={S.hint}>No topic data for this attempt.</div>
+        ) : (
+          <>
+            {results.weak.map((w, i) => (
+              <div key={i} style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 600 }}>{w.t}</span><span style={S.hint}>{w.pct}% · {w.n} q</span>
+                </div>
+                <div style={{ height: 8, background: "var(--surface-2)", borderRadius: 8, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${w.pct}%`, borderRadius: 8, background: w.pct < 50 ? "var(--danger)" : w.pct < 75 ? "var(--warn)" : "var(--success)" }} />
+                </div>
+              </div>
+            ))}
+            {results.weak.length > 1 && results.weak[0].pct < 75 && (
+              <div style={{ ...S.hint, marginTop: 6 }}>💡 Focus your next sessions on <b>{results.weak[0].t}</b> — it's your weakest area.</div>
+            )}
+          </>
         )}
       </div>
 
@@ -5667,18 +6252,77 @@ function biomeFor(health) {
 }
 
 // compact, shareable deck code: base64 of trimmed deck JSON
-function encodeDeckCode(deck) {
-  const slim = {
-    n: deck.name, s: deck.subject || "",
-    c: deck.cards.map((c) => ({ f: c.front, b: c.back, t: c.type || "basic", g: c.tags || [] })),
-  };
-  try { return "KIOKU1:" + btoa(unescape(encodeURIComponent(JSON.stringify(slim)))); }
-  catch { return ""; }
+// ---- deck trade codes ----
+// KIOKU2 (preferred): gzip-compressed, tab/newline-delimited payload -> URL-safe base64.
+//   Much shorter than JSON. Falls back to KIOKU1 (json+base64) if gzip isn't available.
+// First line: name\tsubject ; each following line: front\tback\ttype\ttag,tag
+function b64urlFromBytes(bytes) {
+  let bin = ""; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-function decodeDeckCode(code) {
+function bytesFromB64url(s) {
+  let b = String(s).replace(/-/g, "+").replace(/_/g, "/"); while (b.length % 4) b += "=";
+  const bin = atob(b); const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+const ESC = (s) => String(s == null ? "" : s).replace(/\\/g, "\\\\").replace(/\t/g, "\\t").replace(/\n/g, "\\n");
+const UNESC = (s) => String(s).replace(/\\t/g, "\t").replace(/\\n/g, "\n").replace(/\\\\/g, "\\");
+
+function deckToText(deck) {
+  const lines = [ESC(deck.name) + "\t" + ESC(deck.subject || "")];
+  deck.cards.forEach((c) => {
+    lines.push([ESC(c.front), ESC(c.back), c.type || "basic", (c.tags || []).join(",")].join("\t"));
+  });
+  return lines.join("\n");
+}
+function textToDeck(text) {
+  const lines = String(text).split("\n");
+  const head = (lines.shift() || "").split("\t");
+  const cards = lines.filter((l) => l.length).map((l) => {
+    const p = l.split("\t");
+    return { front: UNESC(p[0] || ""), back: UNESC(p[1] || ""), type: p[2] || "basic", tags: (p[3] || "").split(",").filter(Boolean) };
+  }).filter((c) => c.front && c.back);
+  return { name: UNESC(head[0] || "Shared deck"), subject: UNESC(head[1] || ""), cards };
+}
+
+async function encodeDeckCode(deck) {
+  // try gzip (CompressionStream) for a compact KIOKU2 code
   try {
-    const raw = String(code).trim().replace(/^KIOKU1:/, "");
-    const obj = JSON.parse(decodeURIComponent(escape(atob(raw))));
+    if (typeof CompressionStream !== "undefined") {
+      const text = deckToText(deck);
+      const cs = new CompressionStream("gzip");
+      const writer = cs.writable.getWriter();
+      writer.write(new TextEncoder().encode(text)); writer.close();
+      const buf = await new Response(cs.readable).arrayBuffer();
+      return "KIOKU2:" + b64urlFromBytes(new Uint8Array(buf));
+    }
+  } catch (e) {}
+  // fallback: legacy JSON + base64
+  try {
+    const slim = { n: deck.name, s: deck.subject || "", c: deck.cards.map((c) => ({ f: c.front, b: c.back, t: c.type || "basic", g: c.tags || [] })) };
+    return "KIOKU1:" + btoa(unescape(encodeURIComponent(JSON.stringify(slim))));
+  } catch { return ""; }
+}
+
+async function decodeDeckCode(code) {
+  const raw = String(code).trim();
+  // KIOKU2: gzip
+  if (/^KIOKU2:/.test(raw)) {
+    try {
+      const bytes = bytesFromB64url(raw.replace(/^KIOKU2:/, ""));
+      const ds = new DecompressionStream("gzip");
+      const writer = ds.writable.getWriter();
+      writer.write(bytes); writer.close();
+      const buf = await new Response(ds.readable).arrayBuffer();
+      const text = new TextDecoder().decode(buf);
+      const deck = textToDeck(text);
+      return deck.cards.length ? deck : null;
+    } catch { return null; }
+  }
+  // KIOKU1: legacy json+base64
+  try {
+    const obj = JSON.parse(decodeURIComponent(escape(atob(raw.replace(/^KIOKU1:/, "")))));
     if (!obj || !Array.isArray(obj.c)) return null;
     return {
       name: obj.n || "Shared deck", subject: obj.s || "",
@@ -5687,7 +6331,7 @@ function decodeDeckCode(code) {
   } catch { return null; }
 }
 
-function Worlds({ decks, log, world, onSaveWorld, onImportDeck, onBack }) {
+function Worlds({ decks, log, world, onSaveWorld, onImportDeck, onShareDeck, onLinkWorld, onBack }) {
   const [tab, setTab] = useState("world"); // world | trade | friends
   const me = useMemo(() => buildWorld(decks, log), [decks, log]);
 
@@ -5702,18 +6346,21 @@ function Worlds({ decks, log, world, onSaveWorld, onImportDeck, onBack }) {
   const [importCode, setImportCode] = useState("");
   const [importMsg, setImportMsg] = useState("");
 
-  const makeCode = () => {
+  const makeCode = async () => {
     const d = decks[shareDeckId]; if (!d) return;
-    const code = encodeDeckCode(d);
-    setShareCode(code); setCopyMsg("");
+    setShareCode("…"); setCopyMsg("");
+    const code = await encodeDeckCode(d);
+    setShareCode(code || "");
+    if (code && onShareDeck) onShareDeck();
   };
   const copyCode = async () => {
     if (!shareCode) return;
     try { await navigator.clipboard.writeText(shareCode); setCopyMsg("Copied! Send it to a friend."); }
     catch { setCopyMsg("Select the code and copy it manually."); }
   };
-  const doImport = () => {
-    const deck = decodeDeckCode(importCode);
+  const doImport = async () => {
+    setImportMsg("Decoding…");
+    const deck = await decodeDeckCode(importCode);
     if (!deck || !deck.cards.length) { setImportMsg("That code isn't valid. Make sure you copied the whole thing."); return; }
     onImportDeck(deck.name + " (shared)", deck.cards, deck.subject);
     setImportMsg(`Imported "${deck.name}" with ${deck.cards.length} cards! Find it in your decks.`);
@@ -5735,6 +6382,7 @@ function Worlds({ decks, log, world, onSaveWorld, onImportDeck, onBack }) {
       const f = { name: obj.name || friendName || "Friend", overall: obj.overall || 0, regions: obj.regions, addedAt: Date.now() };
       const next = { ...(world || {}), name: myName, friends: [...friends.filter((x) => x.name !== f.name), f] };
       onSaveWorld(next); setAddCode(""); setFriendMsg(`Linked with ${f.name}'s world!`);
+      if (onLinkWorld) onLinkWorld();
     } catch { setFriendMsg("That world code isn't valid."); }
   };
   const copyMyWorld = async () => {
@@ -6062,6 +6710,32 @@ button:focus:not(:focus-visible) { outline: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
 }
+
+/* ---- lecture recorder ---- */
+.rec-orb { display: inline-flex; align-items: center; gap: 12px; padding: 14px 26px; border-radius: 999px; background: var(--surface-2); }
+.rec-orb.live { background: var(--danger-bg); }
+.rec-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--muted); }
+.rec-orb.live .rec-dot { background: var(--danger); animation: pulse-glow 1.1s infinite; }
+.rec-time { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 22px; color: var(--text); }
+.lecture-transcript { background: var(--surface-2); border-radius: 10px; padding: 14px; font-size: 14.5px; line-height: 1.6; max-height: 240px; overflow-y: auto; white-space: pre-wrap; }
+.lecture-interim { color: var(--muted); }
+.lecture-guide h2 { font-size: 19px; margin: 16px 0 6px; }
+.lecture-guide h3 { font-size: 16px; margin: 14px 0 5px; }
+.lecture-guide h4 { font-size: 14.5px; margin: 12px 0 4px; }
+.lecture-guide p { font-size: 14.5px; line-height: 1.6; margin: 6px 0; }
+.lecture-guide ul, .lecture-guide ol { margin: 6px 0 6px 22px; }
+.lecture-guide li { font-size: 14.5px; line-height: 1.55; margin: 3px 0; }
+.lecture-guide code { background: var(--surface-2); padding: 1px 5px; border-radius: 5px; font-size: 13px; }
+
+/* ---- exam customization controls ---- */
+.exam-custom { background: var(--surface-2); border-radius: 12px; padding: 14px; margin-top: 4px; }
+.exam-custom-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.exam-custom-row:last-child { margin-bottom: 0; }
+.exam-custom-row > label { font-size: 13px; font-weight: 600; color: var(--muted); width: 80px; flex-shrink: 0; }
+.seg { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.seg-btn { background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; padding: 7px 12px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.seg-btn:hover { border-color: var(--accent); color: var(--text); }
+.seg-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 /* ============================================================
    ADVANCED FEATURES — AI Import / Exam Sim / Worlds

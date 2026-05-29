@@ -1218,7 +1218,7 @@ const usageTracker = (function () {
     const t = todayKey();
     if (state.date !== t) { state.date = t; state.tokens = 0; }
   }
-  function getState() { rollIfNeeded(); return { ...state, remaining: Math.max(0, state.limit - state.tokens), over: state.tokens >= state.limit }; }
+  function getState() { rollIfNeeded(); const remaining = Math.max(0, state.limit - state.tokens); return { ...state, remaining, over: state.tokens >= state.limit, usedPct: Math.min(100, Math.round((state.tokens / Math.max(1, state.limit)) * 100)) }; }
   async function persist() {
     try {
       // keep ~30 days of history for the usage display, trimmed
@@ -1276,6 +1276,23 @@ function useUsage() {
     return () => { mounted = false; unsub(); };
   }, []);
   return u;
+}
+
+// Compact daily-AI percent bar (no token numbers shown to the user)
+function UsageBar({ usage, compact }) {
+  const pct = usage.usedPct || 0;
+  const over = usage.over;
+  const color = over ? "var(--danger)" : pct >= 80 ? "var(--warn)" : "var(--accent)";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: compact ? 120 : 160 }}>
+      <div style={{ flex: 1, height: 6, background: "var(--surface-2)", borderRadius: 6, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 6, transition: "width .3s" }} />
+      </div>
+      <span style={{ fontSize: 11.5, fontWeight: 600, color: over ? "var(--danger-text)" : "var(--muted2)", whiteSpace: "nowrap" }}>
+        {over ? "Daily limit reached" : `${Math.max(0, 100 - pct)}% left`}
+      </span>
+    </div>
+  );
 }
 
 /* ============================================================
@@ -1346,7 +1363,7 @@ function useAuth() {
 
 // Error thrown when the daily token cap is reached — callers show a friendly message.
 function DailyLimitError() {
-  const e = new Error("Daily token limit reached. It resets tomorrow.");
+  const e = new Error("Daily AI limit reached. It resets tomorrow.");
   e.code = "DAILY_LIMIT";
   return e;
 }
@@ -4182,23 +4199,20 @@ function Settings({ settings, onSave, onBack, decks, log, stats, onClearLog, onR
       <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>AI usage today</div>
         {(() => {
-          const pct = Math.min(100, Math.round((usage.tokens / Math.max(1, usage.limit)) * 100));
+          const pct = usage.usedPct || 0;
           const over = usage.over;
           const barColor = over ? "var(--danger)" : pct >= 80 ? "var(--warn)" : "var(--success)";
           return (
             <>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6, flexWrap: "wrap", gap: 6 }}>
-                <span style={{ fontSize: 15, fontWeight: 600 }}>{usage.tokens.toLocaleString()} <span style={{ color: "var(--muted)", fontWeight: 400 }}>/ {usage.limit.toLocaleString()} tokens</span></span>
-                <span style={{ fontSize: 12, color: over ? "var(--danger-text)" : "var(--muted2)" }}>{over ? "Limit reached" : `${usage.remaining.toLocaleString()} left`}</span>
+                <span style={{ fontSize: 15, fontWeight: 600 }}>{over ? "Daily limit reached" : `${pct}% used`}</span>
+                <span style={{ fontSize: 12, color: over ? "var(--danger-text)" : "var(--muted2)" }}>{over ? "Resets tomorrow" : `${Math.max(0, 100 - pct)}% left`}</span>
               </div>
               <div style={{ height: 10, background: "var(--surface-2)", borderRadius: 10, overflow: "hidden" }}>
                 <div style={{ height: "100%", width: `${pct}%`, background: barColor, borderRadius: 10, transition: "width .4s" }} />
               </div>
               <div style={{ ...S.hint, marginTop: 8 }}>
-                Claude Haiku 4.5 tokens used today (input + output). Resets daily.
-                {usage.serverEnforced
-                  ? " Enforced server-side per account."
-                  : " Counted on this device — connect server-side tracking in your Worker for tamper-proof, cross-device limits (see the file's setup notes)."}
+                Your daily AI allowance. Resets every day.
               </div>
             </>
           );
@@ -4572,7 +4586,7 @@ function Generate({ onSave, onCancel }) {
       setStatus("done");
     } catch (e) {
       setStatus("error");
-      if (e && e.code === "DAILY_LIMIT") setError("You've hit today's AI token limit. It resets tomorrow — your decks and progress are unaffected.");
+      if (e && e.code === "DAILY_LIMIT") setError("You've reached today's AI limit. It resets tomorrow — your decks and progress are unaffected.");
       else setError("Couldn't reach the AI: " + (e.message || "unknown error"));
     }
   };
@@ -4610,10 +4624,8 @@ function Generate({ onSave, onCancel }) {
         </div>
       )}
       {WORKER_CONFIGURED && (
-        <div style={{ ...S.hint, marginTop: 6 }}>
-          {usage.over
-            ? <span style={{ color: "var(--danger-text)" }}>⚠ Daily AI token limit reached — resets tomorrow.</span>
-            : <>Daily AI budget: {usage.remaining.toLocaleString()} of {usage.limit.toLocaleString()} tokens left.</>}
+        <div style={{ marginTop: 8, maxWidth: 320 }}>
+          <UsageBar usage={usage} />
         </div>
       )}
       <div style={{ ...S.addBox, marginTop: 18 }}>
@@ -4941,8 +4953,8 @@ function ImportDoc({ onSave, onCancel }) {
     } catch (e) {
       setChunkMsg("");
       if (e && e.code === "DAILY_LIMIT") {
-        if (collected.length) { setNotice(`Hit today's AI token limit — kept the ${collected.length} cards made so far. The limit resets tomorrow.`); if (!name) setName("Imported notes"); setStatus("done"); return; }
-        setStatus("error"); setError("You've hit today's AI token limit. It resets tomorrow."); return;
+        if (collected.length) { setNotice(`Reached today's AI limit — kept the ${collected.length} cards made so far. The limit resets tomorrow.`); if (!name) setName("Imported notes"); setStatus("done"); return; }
+        setStatus("error"); setError("You've reached today's AI limit. It resets tomorrow."); return;
       }
       setStatus("error"); setError("Couldn't reach the AI: " + (e.message || "unknown error")); return;
     }
@@ -5578,7 +5590,7 @@ Transcript:
         <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
           <button className="primary" disabled={!WORKER_CONFIGURED || wordCount < 8} onClick={() => build("guide")}>📝 Study guide</button>
           <button className="primary" disabled={!WORKER_CONFIGURED || wordCount < 8} onClick={() => build("cards")}>🃏 Flashcards</button>
-          <span style={{ marginLeft: "auto", ...S.hint }}>{usage.remaining.toLocaleString()} AI tokens left today</span>
+          <div style={{ marginLeft: "auto" }}><UsageBar usage={usage} compact /></div>
         </div>
       </div>
     </div>
@@ -5588,6 +5600,111 @@ Transcript:
 /* =========================================================
    1) AI CONTENT IMPORT  (YouTube + website links)
    ========================================================= */
+/* --- fetch real content for link import (transcript / page text) --- */
+function ytVideoId(url) {
+  const u = String(url).trim();
+  let m = u.match(/[?&]v=([\w-]{11})/) || u.match(/youtu\.be\/([\w-]{11})/) ||
+          u.match(/youtube\.com\/(?:embed|shorts|live)\/([\w-]{11})/);
+  return m ? m[1] : null;
+}
+// Try several CORS-friendly readers; return plain text or "".
+async function fetchViaProxies(targetUrl, { json = false } = {}) {
+  const encoded = encodeURIComponent(targetUrl);
+  const candidates = [
+    "https://api.allorigins.win/raw?url=" + encoded,
+    "https://corsproxy.io/?url=" + encoded,
+    "https://thingproxy.freeboard.io/fetch/" + targetUrl,
+    "https://r.jina.ai/" + targetUrl, // returns clean readable text/markdown
+  ];
+  for (const c of candidates) {
+    try {
+      const res = await fetch(c, { headers: { "Accept": json ? "application/json,*/*" : "text/plain,*/*" } });
+      if (!res.ok) continue;
+      const txt = await res.text();
+      if (txt && txt.length > 20) return txt;
+    } catch (e) {}
+  }
+  return "";
+}
+// Pull a YouTube transcript by reading the watch page for caption tracks, then the timedtext XML.
+async function fetchYouTubeTranscript(url) {
+  const id = ytVideoId(url);
+  if (!id) return { text: "", title: "" };
+  let title = "";
+  // 1) try r.jina.ai on the watch page — it often returns the transcript + title inline
+  try {
+    const page = await fetchViaProxies("https://www.youtube.com/watch?v=" + id);
+    if (page) {
+      const tm = page.match(/"title":"([^"]{3,200})"/) || page.match(/<title>([^<]+)<\/title>/);
+      if (tm) title = tm[1].replace(/\s*-\s*YouTube\s*$/, "").trim();
+      // find caption track baseUrl
+      const trackMatch = page.match(/"captionTracks":(\[.*?\])/);
+      if (trackMatch) {
+        let tracks = null;
+        try { tracks = JSON.parse(trackMatch[1].replace(/\\u0026/g, "&").replace(/\\\//g, "/")); } catch (e) {}
+        if (tracks && tracks.length) {
+          const track = tracks.find((t) => /en/i.test(t.languageCode)) || tracks[0];
+          if (track && track.baseUrl) {
+            const xml = await fetchViaProxies(track.baseUrl.replace(/\\u0026/g, "&"));
+            const text = ttXmlToText(xml);
+            if (text) return { text, title };
+          }
+        }
+      }
+      // some readers return the transcript as readable lines already
+      if (/transcript/i.test(page) && page.length > 1500) {
+        const stripped = page.replace(/\[[0-9:]+\]/g, " ").replace(/\s+/g, " ").trim();
+        if (stripped.length > 600) return { text: stripped.slice(0, 16000), title };
+      }
+    }
+  } catch (e) {}
+  // 2) direct timedtext endpoints
+  for (const u of [
+    `https://video.google.com/timedtext?lang=en&v=${id}`,
+    `https://www.youtube.com/api/timedtext?lang=en&v=${id}`,
+  ]) {
+    try {
+      const xml = await fetchViaProxies(u);
+      const text = ttXmlToText(xml);
+      if (text) return { text, title };
+    } catch (e) {}
+  }
+  return { text: "", title };
+}
+function ttXmlToText(xml) {
+  if (!xml || xml.indexOf("<text") === -1) return "";
+  const parts = [];
+  const re = /<text[^>]*>([\s\S]*?)<\/text>/g; let m;
+  while ((m = re.exec(xml)) !== null) {
+    let s = m[1].replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+      .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+    if (s) parts.push(s);
+  }
+  return parts.join(" ").trim();
+}
+// Strip a fetched HTML page down to readable text.
+function htmlToText(html) {
+  if (!html) return "";
+  // r.jina.ai already returns clean text/markdown
+  if (!/[<][a-z!]/i.test(html.slice(0, 200))) return html.replace(/\s+\n/g, "\n").trim();
+  let h = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<header[\s\S]*?<\/header>/gi, " ")
+    .replace(/<footer[\s\S]*?<\/footer>/gi, " ")
+    .replace(/<nav[\s\S]*?<\/nav>/gi, " ");
+  h = h.replace(/<\/(p|div|li|h[1-6]|br|tr)>/gi, "\n").replace(/<[^>]+>/g, " ");
+  h = h.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+  return h.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+function pageTitleFromHtml(html) {
+  if (!html) return "";
+  const m = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  return m ? m[1].trim() : "";
+}
+
 function AIImport({ onSave, onCancel }) {
   const [url, setUrl] = useState("");
   const [topic, setTopic] = useState("");
@@ -5610,44 +5727,68 @@ function AIImport({ onSave, onCancel }) {
     if (!src) { setError("Paste a YouTube or website link first."); return; }
     setStatus("working");
     try {
-      // 1) concepts + structure + summary  (the model reasons from the URL + any topic hint)
-      setStep("Reading the source and extracting key concepts…");
+      // 0) ACTUALLY FETCH THE CONTENT — this is what was missing.
+      let sourceText = "", fetchedTitle = "";
+      if (kind === "youtube") {
+        setStep("Fetching the video transcript…");
+        const r = await fetchYouTubeTranscript(src);
+        sourceText = r.text || ""; fetchedTitle = r.title || "";
+        if (!sourceText) {
+          // last resort: try reading the page text for description/title
+          const page = await fetchViaProxies("https://r.jina.ai/https://www.youtube.com/watch?v=" + (ytVideoId(src) || ""));
+          sourceText = htmlToText(page).slice(0, 16000);
+        }
+      } else {
+        setStep("Fetching the page…");
+        const raw = await fetchViaProxies(src);
+        fetchedTitle = pageTitleFromHtml(raw);
+        sourceText = htmlToText(raw).slice(0, 16000);
+      }
+
+      const haveContent = sourceText && sourceText.replace(/\s+/g, " ").trim().length > 200;
+      if (!haveContent && kind === "youtube") {
+        throw new Error("Couldn't get this video's transcript. It may have captions disabled. Try a video with captions, or paste the topic in the hint box and use “Generate with AI” instead.");
+      }
+      if (!haveContent && !topic) {
+        throw new Error("Couldn't read that page (it may block automated access). Try another link, or add a focus hint describing what to study.");
+      }
+
+      const grounded = haveContent
+        ? `Base everything ONLY on the following ${kind === "youtube" ? "video transcript" : "page content"}. Do not invent facts that aren't supported by it.\n\nCONTENT:\n"""${sourceText.slice(0, 14000)}"""`
+        : `You could not read the source directly. Use the focus hint and your own knowledge of this subject; stay accurate.`;
+
+      // 1) concepts + structure + summary  (grounded in the fetched text)
+      setStep("Extracting key concepts…");
       const planPrompt =
-`You are a study-material engine. A student wants to learn from this ${kind || "web"} source:
-URL: ${src}
-${topic ? "Focus/topic hint: " + topic : ""}
+`You are a study-material engine.${topic ? " Focus/topic hint: " + topic + "." : ""}
+${grounded}
 
-Using your knowledge of this URL and its likely subject matter, produce a structured study pack. If you are not certain of the exact page contents, infer the most probable core curriculum for a source with this URL/title and stay accurate to that subject.
-
-Return ONLY a JSON object (no markdown) with this exact shape:
+Produce a structured study pack. Return ONLY a JSON object (no markdown):
 {
   "title": "<short deck name>",
   "subject": "<one or two word subject>",
   "summary": "<3-5 sentence plain-English summary of what this material covers>",
   "topics": ["<key topic 1>", "<key topic 2>", "..."],
-  "explanations": [
-     {"topic":"<topic>","detail":"<2-3 sentence explanation a student can learn from>"}
-  ]
+  "explanations": [ {"topic":"<topic>","detail":"<2-3 sentence explanation a student can learn from>"} ]
 }
-Keep 4-8 topics. Be accurate and educational.`;
-      const planText = await callAI(planPrompt, { maxTokens: 2000 });
-      const plan = extractJSONObject(planText) || {};
+Keep 4-8 topics. Be accurate to the content.`;
+      const plan = extractJSONObject(await callAI(planPrompt, { maxTokens: 2000 })) || {};
       const topics = Array.isArray(plan.topics) ? plan.topics.slice(0, 10) : [];
 
-      // 2) flashcards grounded in those topics
-      setStep("Generating flashcards from the concepts…");
+      // 2) flashcards grounded in the content
+      setStep("Generating flashcards…");
       const cardPrompt =
-`Create 18 study flashcards covering this material${plan.subject ? " (subject: " + plan.subject + ")" : ""}.
-Source: ${src}
-Key topics to cover: ${topics.join(", ") || topic || "the core concepts of this source"}
-Each card: a concise front (term or question) and a concise, accurate back (answer/definition). If mathematical, use $...$ LaTeX.
+`Create 18 study flashcards from this material${plan.subject ? " (subject: " + plan.subject + ")" : ""}.
+${grounded}
+Each card: a concise front (term or question) and a concise, accurate back (answer/definition) drawn from the content above. If mathematical, use $...$ LaTeX.
 Return ONLY a JSON array, no markdown: [{"front":"...","back":"..."}]`;
       const cards = extractJSONArray(await callAI(cardPrompt, { maxTokens: 4000 })) || [];
 
       // 3) a short multiple-choice quiz
-      setStep("Building a quick comprehension quiz…");
+      setStep("Building a comprehension quiz…");
       const quizPrompt =
-`Write 5 multiple-choice quiz questions to test understanding of: ${topics.join(", ") || topic || src}.
+`Write 5 multiple-choice quiz questions testing understanding of this material.
+${grounded}
 Each question has exactly 4 options and one correct answer. Distractors must be plausible and the same type as the answer.
 Return ONLY a JSON array, no markdown:
 [{"q":"...","options":["a","b","c","d"],"answer":"<exact text of the correct option>"}]`;
@@ -5656,12 +5797,13 @@ Return ONLY a JSON array, no markdown:
         .filter((x) => x && x.q && Array.isArray(x.options) && x.options.length >= 2 && x.answer)
         .map((x) => ({ q: String(x.q), options: x.options.map(String), answer: String(x.answer) }));
 
-      if (!cards.length) throw new Error("Couldn't extract enough material from that link. Try a more specific topic hint.");
+      if (!cards.length) throw new Error("Couldn't build cards from that source. Try a more specific focus hint.");
 
       setResult({
-        name: plan.title || topic || (kind === "youtube" ? "YouTube import" : "Web import"),
+        name: plan.title || fetchedTitle || topic || (kind === "youtube" ? "YouTube import" : "Web import"),
         subject: plan.subject || "",
         summary: plan.summary || "",
+        sourced: haveContent,
         topics,
         explanations: Array.isArray(plan.explanations) ? plan.explanations : [],
         cards: cards.filter((c) => c && c.front && c.back).map((c) => ({ front: String(c.front), back: String(c.back) })),
@@ -5670,7 +5812,7 @@ Return ONLY a JSON array, no markdown:
       setStatus("done");
     } catch (e) {
       setError((e && e.code === "DAILY_LIMIT")
-        ? "You've hit today's AI usage limit. It resets tomorrow."
+        ? "You've reached today's AI limit. It resets tomorrow."
         : (e && e.message) || "Import failed. Try again or use a topic hint.");
       setStatus("error");
     }
@@ -5683,7 +5825,7 @@ Return ONLY a JSON array, no markdown:
         <button className="ghost" onClick={onCancel}>← Back</button>
         <h1 className="app-h1" style={S.h1}>Import from a link</h1>
       </div>
-      <p style={S.sub}>Paste a YouTube video or website and let AI turn it into a full study pack — flashcards, a quiz, and a summary.</p>
+      <p style={S.sub}>Paste a YouTube video (with captions) or a website. Kioku pulls the real transcript or page text and turns it into flashcards, a quiz, and a summary.</p>
 
       {!WORKER_CONFIGURED && (
         <div style={S.errorBox}>AI isn't connected. Set your Worker URL in the file to enable link import.</div>
@@ -5704,7 +5846,7 @@ Return ONLY a JSON array, no markdown:
             {status === "working" ? "Working…" : "✨ Generate study pack"}
           </button>
           {kind && <span style={{ ...S.hint }}>{kind === "youtube" ? "YouTube video detected" : "Website detected"}</span>}
-          <span style={{ marginLeft: "auto", ...S.hint }}>{usage.remaining.toLocaleString()} AI tokens left today</span>
+          <div style={{ marginLeft: "auto" }}><UsageBar usage={usage} compact /></div>
         </div>
       </div>
 
@@ -5721,6 +5863,13 @@ Return ONLY a JSON array, no markdown:
         <>
           <div className="panel-box" style={S.panelBox}>
             <div style={S.panelTitle}>Summary</div>
+            <div style={{ marginBottom: 8 }}>
+              <span style={{ fontSize: 11.5, fontWeight: 600, padding: "3px 9px", borderRadius: 999,
+                background: result.sourced ? "var(--success-bg)" : "var(--warn-bg)",
+                color: result.sourced ? "var(--success-text)" : "var(--warn-text)" }}>
+                {result.sourced ? "✓ Built from the actual content" : "⚠ Couldn't read source — used the topic hint"}
+              </span>
+            </div>
             <div style={{ fontSize: 15, lineHeight: 1.6 }}>{result.summary || "—"}</div>
             {result.topics.length > 0 && (
               <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 }}>

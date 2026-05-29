@@ -2238,8 +2238,9 @@ function Home({ decks, log, settings, stats, levelInfo, onCreate, onOpen, onStud
       <div style={S.homeTop}>
         <div>
           <h1 className="app-h1" style={S.h1}>Your decks</h1>
-          <p style={S.sub}>Spaced repetition that adapts. Tap a word in review to look it up.</p>
+          <p style={S.sub}>{list.length === 0 ? "Let's create your first deck below." : "Spaced repetition that adapts. Tap a word in review to look it up."}</p>
         </div>
+        {list.length > 0 && (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button className="ghost" onClick={() => fileRef.current.click()}>Import file</button>
           <button className="ghost" onClick={onImportDoc}>From notes / PDF</button>
@@ -2247,8 +2248,9 @@ function Home({ decks, log, settings, stats, levelInfo, onCreate, onOpen, onStud
           <button className="ghost" onClick={onLecture}>🎙 Record lecture</button>
           <button className="ghost" onClick={onGenerate}>Generate with AI</button>
           <button className="primary" onClick={onCreate}>+ New deck</button>
-          <input ref={fileRef} type="file" accept=".json" hidden onChange={importDeck} />
         </div>
+        )}
+        <input ref={fileRef} type="file" accept=".json" hidden onChange={importDeck} />
       </div>
 
       {/* Daily goal banner — only once the user actually has decks */}
@@ -2338,7 +2340,7 @@ function Home({ decks, log, settings, stats, levelInfo, onCreate, onOpen, onStud
                       </div>
                     </div>
                     <div style={S.deckActions}>
-                      <button className="study" disabled={d.cards.length === 0} onClick={() => onStudy(d.id, "due")}>study</button>
+                      <button className="study deck-study" disabled={d.cards.length === 0} onClick={() => onStudy(d.id, "due")}>Study →</button>
                       <button className="icon" title="export" onClick={() => exportDeck(d)}>↓</button>
                       <button className="icon danger" title="delete"
                               onClick={() => confirm(`Delete "${d.name}"?`) && onDelete(d.id)}>✕</button>
@@ -5334,6 +5336,7 @@ function LectureRecorder({ onSave, onCancel }) {
   useEffect(() => () => { stopAll(); }, []);
 
   function startTimer() {
+    if (timerRef.current) clearInterval(timerRef.current); // never stack timers
     startedAtRef.current = Date.now();
     timerRef.current = setInterval(() => {
       setElapsed(baseElapsedRef.current + Math.floor((Date.now() - startedAtRef.current) / 1000));
@@ -5368,13 +5371,13 @@ function LectureRecorder({ onSave, onCancel }) {
       if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
         setError("Microphone access was blocked. Allow the mic and try again.");
         wantOnRef.current = false; setRecording(false); pauseTimer();
-      } else if (ev.error === "no-speech") {
-        // ignore; the auto-restart will keep it listening
       }
+      // "no-speech"/"aborted"/"network" are transient — onend will restart if wanted
     };
     r.onend = () => {
-      // Chrome ends the session periodically — restart if we still want to record
-      if (wantOnRef.current) { try { r.start(); } catch (e) {} }
+      // Chrome ends the session periodically — restart if we still want to record.
+      // small delay avoids an "already started" race on rapid restarts.
+      if (wantOnRef.current) { setTimeout(() => { if (wantOnRef.current && recogRef.current === r) { try { r.start(); } catch (e) {} } }, 250); }
     };
     return r;
   }
@@ -5723,8 +5726,10 @@ function AIImport({ onSave, onCancel }) {
 
   async function run() {
     setError(""); setResult(null);
-    const src = url.trim();
+    let src = url.trim();
     if (!src) { setError("Paste a YouTube or website link first."); return; }
+    // add a scheme if the user pasted a bare domain so fetches resolve
+    if (!/^https?:\/\//i.test(src) && kind) src = "https://" + src.replace(/^\/+/, "");
     setStatus("working");
     try {
       // 0) ACTUALLY FETCH THE CONTENT — this is what was missing.
@@ -6055,8 +6060,10 @@ function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
     if (!WORKER_CONFIGURED) { setError("AI isn't connected. Set your Worker URL to run AI exams."); return; }
     setError(""); setPhase("running");
     setAnswers([]); setQuestions([]); setIdx(0); setPicked(null);
+    savedRef.current = false; // allow this attempt's result to be saved
     diffRef.current = diffMode === "adaptive" ? "medium" : diffMode;
     avoidRef.current = []; topicsRef.current = [];
+    if (timerRef.current) clearInterval(timerRef.current); // never stack timers
     setSecondsLeft(minutes * 60);
     timerRef.current = setInterval(() => {
       setSecondsLeft((s) => {
@@ -6147,8 +6154,7 @@ function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
     const past = (examHistory || []).slice().reverse();
     return (
       <div className="fade">
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
-          <button className="ghost" onClick={onBack}>← Back</button>
+        <div style={{ marginBottom: 6 }}>
           <h1 className="app-h1" style={S.h1}>Exam simulator</h1>
         </div>
         <p style={S.sub}>AI-generated mock exams that adapt to you in real time, with timing, scoring, and a predicted real-exam score.</p>
@@ -6541,8 +6547,7 @@ function Worlds({ decks, log, world, onSaveWorld, onImportDeck, onShareDeck, onL
 
   return (
     <div className="fade worlds">
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
-        <button className="ghost" onClick={onBack}>← Back</button>
+      <div style={{ marginBottom: 6 }}>
         <h1 className="app-h1" style={S.h1}>Brain Worlds</h1>
       </div>
       <p style={S.sub}>Your knowledge as a living world. Strengthen regions by studying, trade decks with friends, and link worlds to learn together.</p>
@@ -6714,6 +6719,9 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .show { width: 100%; padding: 13px; background: var(--accent); color: #fff; font-weight: 500; font-size: 15px; }
 .show:hover { background: var(--accent-hover); }
 .study { background: var(--surface-2); color: var(--text); padding: 8px 15px; border: 1px solid var(--border-strong); }
+.deck-study { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.deck-study:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.deck-study:disabled { background: var(--surface-2); color: var(--muted); border-color: var(--border-strong); }
 .study:hover:not(:disabled) { background: var(--border); }
 .study.big { padding: 8px 18px; }
 .help { background: var(--surface); color: var(--text); padding: 8px 12px; border: 1px solid var(--border-strong); font-size: 13px; }

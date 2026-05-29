@@ -255,7 +255,7 @@ window.storage = (function () {
    The rest of the app calls window.storage.get/set unchanged.
    ============================================================ */
 const localStore = window.storage;
-const CLOUD_KEYS = new Set(["decks", "log", "settings", "stats", "examHistory", "world"]);
+const CLOUD_KEYS = new Set(["decks", "log", "settings", "stats", "examHistory"]);
 const accountStore = (function () {
   let user = null;          // current Supabase user (or null)
   let cache = null;         // in-memory copy of the cloud row's data object
@@ -646,10 +646,9 @@ const ACHIEVEMENTS = [
   { id: "examReg",     icon: "📈", name: "Test Driver",        desc: "Complete 5 exam simulations",                     group: "Features", test: (s) => (s.examCount || 0) >= 5 },
   { id: "examPro",     icon: "🧪", name: "Exam Veteran",       desc: "Complete 25 exam simulations",                    group: "Features", test: (s) => (s.examCount || 0) >= 25 },
 
-  // --- Multiplayer / Worlds ---
-  { id: "shareDeck",   icon: "🎁", name: "Generous Scholar",   desc: "Share a deck with a friend",                      group: "Multiplayer", test: (s) => !!s.deckShared },
-  { id: "getDeck",     icon: "📥", name: "Knowledge Trader",   desc: "Import a friend's shared deck",                    group: "Multiplayer", test: (s) => !!s.deckImported },
-  { id: "linkWorld",   icon: "🧠", name: "Mind Linked",        desc: "Link with a friend's Brain World",                group: "Multiplayer", test: (s) => !!s.worldLinked },
+  // --- Sharing ---
+  { id: "shareDeck",   icon: "🎁", name: "Generous Scholar",   desc: "Share a deck with a friend",                      group: "Sharing", test: (s) => !!s.deckShared },
+  { id: "getDeck",     icon: "📥", name: "Knowledge Trader",   desc: "Import a friend's shared deck",                    group: "Sharing", test: (s) => !!s.deckImported },
 
   // --- Dedication (distinct days, comebacks, perfect days) ---
   { id: "days7",       icon: "📅", name: "Regular",            desc: "Study on 7 different days",                       group: "Dedication", test: (s) => (s.distinctDays || 0) >= 7 },
@@ -1375,7 +1374,7 @@ function DailyLimitError() {
    /v1/messages JSON unchanged, so parsing stays identical and
    truncation detection (stop_reason === "max_tokens") still works.
 */
-const MAX_OUTPUT_TOKENS = 8192;
+const MAX_OUTPUT_TOKENS = 2867;
 const WORKER_CONFIGURED = !!WORKER_URL && !/YOUR-WORKER/.test(WORKER_URL);
 
 async function callAIDetailed(prompt, opts = {}) {
@@ -1784,7 +1783,6 @@ function App() {
   });
   const [stats, setStats] = useState({ xp: 0, achievements: [], freezesUsed: 0, freezesUsedAt: [], importedPdf: false, importedImage: false, tutorUses: 0, bestExamPct: 0, examAce: false, examCount: 0, lectureUsed: false, linkImported: false, deckShared: false, deckImported: false, worldLinked: false, freezeRefillMonth: "" });
   const [examHistory, setExamHistory] = useState([]);
-  const [world, setWorld] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState("home");
   const [activeId, setActiveId] = useState(null);
@@ -1821,14 +1819,12 @@ function App() {
         const s = await window.storage.get("settings");
         const st = await window.storage.get("stats");
         const eh = await window.storage.get("examHistory");
-        const w = await window.storage.get("world");
         if (!alive) return;
         setDecks(d && d.value ? JSON.parse(d.value) : {});
         setLog(l && l.value ? JSON.parse(l.value) : []);
         setSettings((cur) => ({ dailyGoal: 20, newPerDay: 20, darkMode: cur.darkMode, ttsAuto: false, typeAnswer: false, soundOn: true, ttsVoice: "", ttsStyle: "natural", autoSync: true, ...(s && s.value ? JSON.parse(s.value) : {}) }));
         setStats({ xp: 0, achievements: [], freezesUsed: 0, freezesUsedAt: [], importedPdf: false, importedImage: false, tutorUses: 0, bestExamPct: 0, examAce: false, examCount: 0, lectureUsed: false, linkImported: false, deckShared: false, deckImported: false, worldLinked: false, freezeRefillMonth: "", ...(st && st.value ? JSON.parse(st.value) : {}) });
         setExamHistory(eh && eh.value ? JSON.parse(eh.value) : []);
-        setWorld(w && w.value ? JSON.parse(w.value) : null);
       } catch (e) {}
       if (alive) setLoaded(true);
     })();
@@ -2005,6 +2001,15 @@ function App() {
     if (Object.keys(patch).length) persistStats({ ...stats, ...patch });
     setActiveId(id); setView("edit");
   };
+  // Add a shared deck WITHOUT navigating away (used by the Share screen so the
+  // success confirmation stays visible). Returns the new deck id.
+  const importDeckOnly = (name, rawCards, subject = "") => {
+    const id = uid();
+    const cards = rawCards.flatMap((c) =>
+      makeCards({ type: c.type || "basic", front: c.front, back: c.back, tags: c.tags || [] }));
+    persist({ ...decks, [id]: { id, name, subject, cards } });
+    return id;
+  };
   const noteExamResult = (pct, qCount) => {
     const patch = {};
     if (pct > (stats.bestExamPct || 0)) patch.bestExamPct = pct;
@@ -2037,10 +2042,6 @@ function App() {
   const persistExamHistory = useCallback(async (next) => {
     setExamHistory(next);
     try { await window.storage.set("examHistory", JSON.stringify(next)); } catch (e) {}
-  }, []);
-  const persistWorld = useCallback(async (next) => {
-    setWorld(next);
-    try { await window.storage.set("world", JSON.stringify(next)); } catch (e) {}
   }, []);
 
   const openStudy = (id, mode = "due") => { setActiveId(id); setStudyMode(mode); setView("study"); };
@@ -2088,7 +2089,7 @@ function App() {
           <button className={navCls(view, "home")} onClick={() => setView("home")}>Decks</button>
           <button className={navCls(view, "library")} onClick={() => setView("library")}>Library</button>
           <button className={navCls(view, "exams")} onClick={() => setView("exams")}>Exams</button>
-          <button className={navCls(view, "worlds")} onClick={() => setView("worlds")}>Worlds</button>
+          <button className={navCls(view, "share")} onClick={() => setView("share")}>Share</button>
           <button className={navCls(view, "dashboard")} onClick={() => setView("dashboard")}>Stats</button>
           <button className={navCls(view, "achievements")} onClick={() => setView("achievements")}>Achievements</button>
         </nav>
@@ -2112,10 +2113,11 @@ function App() {
           <ExamSim decks={decks} examHistory={examHistory}
                    onSaveHistory={(h) => { persistExamHistory(h); markFlag("examCount", true); }}
                    onBack={() => setView("home")} />
-        ) : view === "worlds" ? (
-          <Worlds decks={decks} log={log} world={world} onSaveWorld={persistWorld}
-                  onImportDeck={(n, c, subject) => { markFlag("deckImported"); saveGenerated(n, c, subject || ""); }}
-                  onShareDeck={() => markFlag("deckShared")} onLinkWorld={() => markFlag("worldLinked")}
+        ) : view === "share" ? (
+          <ShareDecks decks={decks}
+                  onImportDeck={(n, c, subject) => { markFlag("deckImported"); return importDeckOnly(n, c, subject || ""); }}
+                  onOpenDeck={(id) => { setActiveId(id); setView("edit"); }}
+                  onShareDeck={() => markFlag("deckShared")}
                   onBack={() => setView("home")} />
         ) : view === "library" ? (
           <Library decks={decks} onOpenDeck={(id) => { setActiveId(id); setView("edit"); }} onSaveDeck={saveDeck} />
@@ -3759,14 +3761,28 @@ function Dashboard({ decks, log, settings, stats, levelInfo, liveStats }) {
 
   const mastery = allCards.length ? Math.round((allCards.reduce((s, c) => s + masteryOf(c), 0) / allCards.length) * 100) : 0;
 
-  // weak tags
+  // Weakest areas — group by tag when cards are tagged; otherwise fall back to
+  // grouping by deck so this always shows something useful (every card has a deck).
   const tagStats = {};
   allCards.forEach((c) => (c.tags || []).forEach((t) => {
     (tagStats[t] = tagStats[t] || []).push(masteryOf(c));
   }));
-  const weakTags = Object.entries(tagStats).filter(([, a]) => a.length >= 2)
+  const tagGroups = Object.entries(tagStats).filter(([, a]) => a.length >= 2)
     .map(([t, a]) => ({ t, m: a.reduce((s, x) => s + x, 0) / a.length, n: a.length }))
-    .sort((a, b) => a.m - b.m).slice(0, 5);
+    .sort((a, b) => a.m - b.m);
+
+  let weakAreas, weakBy;
+  if (tagGroups.length >= 2) {
+    weakAreas = tagGroups.slice(0, 6); weakBy = "tag";
+  } else {
+    // per-deck fallback
+    weakAreas = Object.values(decks).map((d) => {
+      const cs = d.cards.filter((c) => !c.suspended);
+      if (!cs.length) return null;
+      return { t: d.name, m: cs.reduce((s, c) => s + masteryOf(c), 0) / cs.length, n: cs.length };
+    }).filter(Boolean).sort((a, b) => a.m - b.m).slice(0, 6);
+    weakBy = "deck";
+  }
 
   // year heatmap (last 365 days) — also capture per-day review details for tooltip
   const year = [];
@@ -3909,14 +3925,23 @@ function Dashboard({ decks, log, settings, stats, levelInfo, liveStats }) {
 
       <div className="panel-box" style={S.panelBox}>
         <div style={S.panelTitle}>Weakest areas</div>
-        {weakTags.length === 0 ? <div style={S.muted2}>Add tags to your cards to see weak areas.</div> : (
-          weakTags.map((w) => (
-            <div key={w.t} style={S.weakRow}>
-              <span style={S.tag}>{w.t}</span>
-              <div style={S.weakBarTrack}><div style={{ ...S.weakBarFill, width: `${w.m * 100}%` }} /></div>
-              <span style={S.weakPct}>{Math.round(w.m * 100)}%</span>
-            </div>
-          ))
+        {weakAreas.length === 0 ? (
+          <div style={S.muted2}>Study a few cards to see which areas need the most work.</div>
+        ) : (
+          <>
+            <div style={{ ...S.hint, marginBottom: 8 }}>{weakBy === "tag" ? "Lowest-mastery tags — focus here next." : "Lowest-mastery decks — focus here next."}</div>
+            {weakAreas.map((w) => {
+              const pct = Math.round(w.m * 100);
+              const col = pct < 50 ? "var(--danger)" : pct < 75 ? "var(--warn)" : "var(--success)";
+              return (
+                <div key={w.t} style={S.weakRow}>
+                  <span style={weakBy === "tag" ? S.tag : { fontWeight: 600, fontSize: 13.5, minWidth: 90, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{w.t}</span>
+                  <div style={S.weakBarTrack}><div style={{ ...S.weakBarFill, width: `${pct}%`, background: col }} /></div>
+                  <span style={S.weakPct}>{pct}%</span>
+                </div>
+              );
+            })}
+          </>
         )}
       </div>
     </div>
@@ -4004,7 +4029,7 @@ function Achievements({ stats, earned, levelInfo, xpTotal }) {
   }
   // Preferred display order, then append any other groups that exist (so new
   // achievement groups always render even if they're not in this list).
-  const preferredOrder = ["Milestones", "Streaks", "Creator", "Mastery", "Habits", "Lifestyle", "Features", "Multiplayer", "Dedication", "Scholarship", "Other"];
+  const preferredOrder = ["Milestones", "Streaks", "Creator", "Mastery", "Habits", "Lifestyle", "Features", "Sharing", "Dedication", "Scholarship", "Other"];
   const allGroups = new Set();
   for (const a of ACHIEVEMENTS) allGroups.add(a.group || "Other");
   const orderedGroups = [
@@ -4317,7 +4342,7 @@ function Switch({ on, onChange }) {
 
 /* ---------------- GENERATE ---------------- */
 const BATCH = 12;            // smaller batches => responses never hit the token cap
-const MAX_AVOID = 120;       // how many existing fronts we list as "don't repeat"
+const MAX_AVOID = 42;       // how many existing fronts we list as "don't repeat"
 function parseCards(text) {
   if (!text) return [];
   let t = text.trim().replace(/```json/gi, "").replace(/```/g, "").trim();
@@ -5439,13 +5464,13 @@ function LectureRecorder({ onSave, onCancel }) {
       if (!title) {
         try {
           const meta = await callAI(
-`Give a short title and one-word subject for a lecture with this transcript start:\n"""${transcript.slice(0, 800)}"""\nReturn ONLY JSON: {"title":"...","subject":"..."}`,
+`Give a short title and one-word subject for a lecture with this transcript start:\n"""${transcript.slice(0, 500)}"""\nReturn ONLY JSON: {"title":"...","subject":"..."}`,
             { maxTokens: 200 });
           const m = extractJSONObject(meta);
           if (m) { setTitle(m.title || "Lecture"); setSubject(m.subject || ""); }
         } catch (e) {}
       }
-      const chunk = transcript.slice(0, 14000); // keep prompt within limits
+      const chunk = transcript.slice(0, 5000); // keep prompt within limits
       if (kind === "guide") {
         const g = await callAI(
 `You are a study assistant. Turn this lecture transcript into a clear, well-structured study guide a student can revise from.
@@ -5453,7 +5478,7 @@ Use markdown: a short overview, then sections with ## headings, bullet points fo
 
 Transcript:
 """${chunk}"""`,
-          { maxTokens: 4000 });
+          { maxTokens: 1400 });
         setGuide(g); setPhase("result");
       } else {
         const arr = extractJSONArray(await callAI(
@@ -5463,7 +5488,7 @@ Return ONLY a JSON array, no markdown: [{"front":"...","back":"..."}]
 
 Transcript:
 """${chunk}"""`,
-          { maxTokens: 4000 })) || [];
+          { maxTokens: 1400 })) || [];
         const clean = arr.filter((c) => c && c.front && c.back).map((c) => ({ front: String(c.front), back: String(c.back) }));
         if (!clean.length) throw new Error("Couldn't build cards from this transcript. Try recording more.");
         setCards(clean); setPhase("result");
@@ -5657,7 +5682,7 @@ async function fetchYouTubeTranscript(url) {
       // some readers return the transcript as readable lines already
       if (/transcript/i.test(page) && page.length > 1500) {
         const stripped = page.replace(/\[[0-9:]+\]/g, " ").replace(/\s+/g, " ").trim();
-        if (stripped.length > 600) return { text: stripped.slice(0, 16000), title };
+        if (stripped.length > 600) return { text: stripped.slice(0, 5600), title };
       }
     }
   } catch (e) {}
@@ -5741,13 +5766,13 @@ function AIImport({ onSave, onCancel }) {
         if (!sourceText) {
           // last resort: try reading the page text for description/title
           const page = await fetchViaProxies("https://r.jina.ai/https://www.youtube.com/watch?v=" + (ytVideoId(src) || ""));
-          sourceText = htmlToText(page).slice(0, 16000);
+          sourceText = htmlToText(page).slice(0, 5600);
         }
       } else {
         setStep("Fetching the page…");
         const raw = await fetchViaProxies(src);
         fetchedTitle = pageTitleFromHtml(raw);
-        sourceText = htmlToText(raw).slice(0, 16000);
+        sourceText = htmlToText(raw).slice(0, 5600);
       }
 
       const haveContent = sourceText && sourceText.replace(/\s+/g, " ").trim().length > 200;
@@ -5759,7 +5784,7 @@ function AIImport({ onSave, onCancel }) {
       }
 
       const grounded = haveContent
-        ? `Base everything ONLY on the following ${kind === "youtube" ? "video transcript" : "page content"}. Do not invent facts that aren't supported by it.\n\nCONTENT:\n"""${sourceText.slice(0, 14000)}"""`
+        ? `Base everything ONLY on the following ${kind === "youtube" ? "video transcript" : "page content"}. Do not invent facts that aren't supported by it.\n\nCONTENT:\n"""${sourceText.slice(0, 5000)}"""`
         : `You could not read the source directly. Use the focus hint and your own knowledge of this subject; stay accurate.`;
 
       // 1) concepts + structure + summary  (grounded in the fetched text)
@@ -5777,7 +5802,7 @@ Produce a structured study pack. Return ONLY a JSON object (no markdown):
   "explanations": [ {"topic":"<topic>","detail":"<2-3 sentence explanation a student can learn from>"} ]
 }
 Keep 4-8 topics. Be accurate to the content.`;
-      const plan = extractJSONObject(await callAI(planPrompt, { maxTokens: 2000 })) || {};
+      const plan = extractJSONObject(await callAI(planPrompt, { maxTokens: 700 })) || {};
       const topics = Array.isArray(plan.topics) ? plan.topics.slice(0, 10) : [];
 
       // 2) flashcards grounded in the content
@@ -5787,7 +5812,7 @@ Keep 4-8 topics. Be accurate to the content.`;
 ${grounded}
 Each card: a concise front (term or question) and a concise, accurate back (answer/definition) drawn from the content above. If mathematical, use $...$ LaTeX.
 Return ONLY a JSON array, no markdown: [{"front":"...","back":"..."}]`;
-      const cards = extractJSONArray(await callAI(cardPrompt, { maxTokens: 4000 })) || [];
+      const cards = extractJSONArray(await callAI(cardPrompt, { maxTokens: 1400 })) || [];
 
       // 3) a short multiple-choice quiz
       setStep("Building a comprehension quiz…");
@@ -5797,7 +5822,7 @@ ${grounded}
 Each question has exactly 4 options and one correct answer. Distractors must be plausible and the same type as the answer.
 Return ONLY a JSON array, no markdown:
 [{"q":"...","options":["a","b","c","d"],"answer":"<exact text of the correct option>"}]`;
-      const quizRaw = extractJSONArray(await callAI(quizPrompt, { maxTokens: 2500 })) || [];
+      const quizRaw = extractJSONArray(await callAI(quizPrompt, { maxTokens: 900 })) || [];
       const quiz = quizRaw
         .filter((x) => x && x.q && Array.isArray(x.options) && x.options.length >= 2 && x.answer)
         .map((x) => ({ q: String(x.q), options: x.options.map(String), answer: String(x.answer) }));
@@ -5984,10 +6009,10 @@ async function genExamQuestion({ subject, difficulty, avoid, topics }) {
 - Exactly 4 options, one correct.
 - Distractors plausible, same type/length as the answer; no "all/none of the above".
 - ${topicLine}
-- Avoid repeating any of these question stems: ${avoid.slice(-12).join(" | ") || "(none yet)"}
+- Avoid repeating any of these question stems: ${avoid.slice(-6).join(" | ") || "(none yet)"}
 Return ONLY JSON, no markdown:
 {"q":"...","options":["a","b","c","d"],"answer":"<exact correct option text>","why":"<one-sentence why the answer is correct>","topic":"<topic from the list>"}`;
-  const obj = extractJSONObject(await callAI(prompt, { maxTokens: 700 }));
+  const obj = extractJSONObject(await callAI(prompt, { maxTokens: 450 }));
   if (!obj || !obj.q || !Array.isArray(obj.options) || !obj.answer) return null;
   // snap the returned topic to the nearest allowed topic so buckets actually group
   let topic = String(obj.topic || subject);
@@ -6012,7 +6037,7 @@ async function genExamTopics(subject) {
   try {
     const t = await callAI(
 `List 5-7 core topic areas a ${subject} exam would cover. Return ONLY a JSON array of short topic strings (2-4 words each), no markdown.`,
-      { maxTokens: 400 });
+      { maxTokens: 250 });
     const arr = extractJSONArray(t);
     if (arr && arr.length) return arr.map((x) => String(x)).slice(0, 7);
   } catch (e) {}
@@ -6372,41 +6397,8 @@ function ExamSim({ decks, examHistory, onSaveHistory, onBack }) {
 }
 
 /* =========================================================
-   3) WORLDS — multiplayer "brain linking"
-   Your knowledge becomes a living world: each deck is a region whose
-   health = mastery. Share/trade decks via codes, visit friends' worlds,
-   and collaborate to repair weak regions.
+   DECK TRADE CODES
    ========================================================= */
-
-// derive a "world" from the user's decks: regions with health + biome
-function buildWorld(decks, log) {
-  const list = Object.values(decks);
-  const regions = list.map((d) => {
-    const cards = d.cards.filter((c) => !c.suspended);
-    const n = cards.length || 1;
-    const mastery = cards.reduce((s, c) => s + masteryOf(c), 0) / n;
-    const due = cards.filter((c) => !c.due || c.due <= Date.now()).length;
-    const leeches = cards.filter((c) => isLeech(c)).length;
-    return {
-      id: d.id, name: d.name, subject: d.subject || "",
-      cards: cards.length, mastery, due, leeches,
-      health: Math.round(mastery * 100),
-    };
-  });
-  const overall = regions.length ? Math.round(regions.reduce((s, r) => s + r.health, 0) / regions.length) : 0;
-  const totalCards = list.reduce((s, d) => s + d.cards.length, 0);
-  return { regions, overall, totalCards, deckCount: list.length };
-}
-
-function biomeFor(health) {
-  if (health >= 85) return { emoji: "🌳", label: "Flourishing", color: "var(--success)" };
-  if (health >= 65) return { emoji: "🌿", label: "Growing", color: "#6aa84f" };
-  if (health >= 45) return { emoji: "🌾", label: "Fragile", color: "var(--warn)" };
-  if (health >= 25) return { emoji: "🍂", label: "Fading", color: "#cc8844" };
-  return { emoji: "🏜️", label: "Crumbling", color: "var(--danger)" };
-}
-
-// compact, shareable deck code: base64 of trimmed deck JSON
 // ---- deck trade codes ----
 // KIOKU2 (preferred): gzip-compressed, tab/newline-delimited payload -> URL-safe base64.
 //   Much shorter than JSON. Falls back to KIOKU1 (json+base64) if gzip isn't available.
@@ -6486,20 +6478,13 @@ async function decodeDeckCode(code) {
   } catch { return null; }
 }
 
-function Worlds({ decks, log, world, onSaveWorld, onImportDeck, onShareDeck, onLinkWorld, onBack }) {
-  const [tab, setTab] = useState("world"); // world | trade | friends
-  const me = useMemo(() => buildWorld(decks, log), [decks, log]);
-
-  // friends snapshots live in the synced "world" blob: { friends: [{name, code|snapshot}] }
-  const friends = (world && Array.isArray(world.friends)) ? world.friends : [];
-  const myName = (world && world.name) || (accountStore.currentUser() && accountStore.currentUser().email ? accountStore.currentUser().email.split("@")[0] : "You");
-
-  // --- trade state ---
+function ShareDecks({ decks, onImportDeck, onOpenDeck, onShareDeck, onBack }) {
   const [shareDeckId, setShareDeckId] = useState(Object.keys(decks)[0] || "");
   const [shareCode, setShareCode] = useState("");
   const [copyMsg, setCopyMsg] = useState("");
   const [importCode, setImportCode] = useState("");
   const [importMsg, setImportMsg] = useState("");
+  const [importedId, setImportedId] = useState(null);
 
   const makeCode = async () => {
     const d = decks[shareDeckId]; if (!d) return;
@@ -6509,103 +6494,36 @@ function Worlds({ decks, log, world, onSaveWorld, onImportDeck, onShareDeck, onL
     if (code && onShareDeck) onShareDeck();
   };
   const copyCode = async () => {
-    if (!shareCode) return;
+    if (!shareCode || shareCode === "…") return;
     try { await navigator.clipboard.writeText(shareCode); setCopyMsg("Copied! Send it to a friend."); }
     catch { setCopyMsg("Select the code and copy it manually."); }
   };
   const doImport = async () => {
-    setImportMsg("Decoding…");
+    setImportMsg("Decoding…"); setImportedId(null);
     const deck = await decodeDeckCode(importCode);
     if (!deck || !deck.cards.length) { setImportMsg("That code isn't valid. Make sure you copied the whole thing."); return; }
-    onImportDeck(deck.name + " (shared)", deck.cards, deck.subject);
-    setImportMsg(`Imported "${deck.name}" with ${deck.cards.length} cards! Find it in your decks.`);
+    const id = onImportDeck(deck.name + " (shared)", deck.cards, deck.subject);
+    setImportedId(id || null);
+    setImportMsg(`Imported "${deck.name}" — ${deck.cards.length} cards added to your decks.`);
     setImportCode("");
   };
 
-  // --- friends: add by snapshot code (a friend shares their world summary) ---
-  const [friendName, setFriendName] = useState("");
-  const myWorldCode = useMemo(() => {
-    try { return "KWLD1:" + btoa(unescape(encodeURIComponent(JSON.stringify({ name: myName, overall: me.overall, regions: me.regions.map((r) => ({ name: r.name, health: r.health, cards: r.cards })) })))); }
-    catch { return ""; }
-  }, [me, myName]);
-  const [addCode, setAddCode] = useState("");
-  const [friendMsg, setFriendMsg] = useState("");
-  const addFriend = () => {
-    try {
-      const obj = JSON.parse(decodeURIComponent(escape(atob(String(addCode).trim().replace(/^KWLD1:/, "")))));
-      if (!obj || !Array.isArray(obj.regions)) throw new Error();
-      const f = { name: obj.name || friendName || "Friend", overall: obj.overall || 0, regions: obj.regions, addedAt: Date.now() };
-      const next = { ...(world || {}), name: myName, friends: [...friends.filter((x) => x.name !== f.name), f] };
-      onSaveWorld(next); setAddCode(""); setFriendMsg(`Linked with ${f.name}'s world!`);
-      if (onLinkWorld) onLinkWorld();
-    } catch { setFriendMsg("That world code isn't valid."); }
-  };
-  const copyMyWorld = async () => {
-    try { await navigator.clipboard.writeText(myWorldCode); setFriendMsg("Your world code is copied — share it so friends can link with you."); }
-    catch { setFriendMsg("Select your code and copy it manually."); }
-  };
+  const hasDecks = Object.keys(decks).length > 0;
 
   return (
-    <div className="fade worlds">
+    <div className="fade">
       <div style={{ marginBottom: 6 }}>
-        <h1 className="app-h1" style={S.h1}>Brain Worlds</h1>
+        <h1 className="app-h1" style={S.h1}>Share decks</h1>
       </div>
-      <p style={S.sub}>Your knowledge as a living world. Strengthen regions by studying, trade decks with friends, and link worlds to learn together.</p>
+      <p style={S.sub}>Send any deck to a friend as a compact code, or paste one you've received to add it instantly.</p>
 
-      <div className="world-tabs">
-        <button className={"world-tab" + (tab === "world" ? " on" : "")} onClick={() => setTab("world")}>🌍 My world</button>
-        <button className={"world-tab" + (tab === "trade" ? " on" : "")} onClick={() => setTab("trade")}>🔄 Trade decks</button>
-        <button className={"world-tab" + (tab === "friends" ? " on" : "")} onClick={() => setTab("friends")}>🧠 Linked worlds</button>
-      </div>
-
-      {tab === "world" && (
-        <>
-          <div className="world-hero">
-            <div className="world-orb-wrap">
-              <div className="world-orb" style={{ "--h": me.overall }}>
-                <span className="world-orb-pct">{me.overall}<small>%</small></span>
-              </div>
-            </div>
-            <div className="world-hero-meta">
-              <div className="world-hero-name">{myName}'s world</div>
-              <div style={S.hint}>{me.deckCount} regions · {me.totalCards} memories</div>
-              <div className="world-hero-state">{biomeFor(me.overall).emoji} {biomeFor(me.overall).label} world</div>
-              <div style={{ ...S.hint, marginTop: 6 }}>Overall mastery across every region. Study weak regions to heal your world.</div>
-            </div>
-          </div>
-
-          {me.regions.length === 0 ? (
-            <div className="lib-empty"><div className="lib-empty-ic">🌱</div><div className="lib-empty-t">Your world is unformed</div><div className="lib-empty-d">Create a deck and it becomes a region here — its health grows as you master the cards.</div></div>
-          ) : (
-            <div className="world-map">
-              {me.regions.slice().sort((a, b) => a.health - b.health).map((r) => {
-                const bio = biomeFor(r.health);
-                return (
-                  <div key={r.id} className="region-tile" style={{ borderColor: bio.color }}>
-                    <div className="region-biome">{bio.emoji}</div>
-                    <div className="region-name">{r.name}</div>
-                    <div className="region-health-bar"><div style={{ width: `${r.health}%`, background: bio.color }} /></div>
-                    <div className="region-stats">
-                      <span style={{ color: bio.color, fontWeight: 700 }}>{r.health}%</span>
-                      <span style={S.hint}>{r.cards} cards</span>
-                      {r.due > 0 && <span className="region-due">{r.due} to heal</span>}
-                      {r.leeches > 0 && <span className="region-leech">🐛 {r.leeches}</span>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </>
-      )}
-
-      {tab === "trade" && (
-        <>
-          <div className="panel-box" style={S.panelBox}>
-            <div style={S.panelTitle}>Share one of your decks</div>
-            <p style={S.hint}>Generate a code, send it to a friend, and they can instantly add the whole deck to their world.</p>
+      <div className="panel-box" style={S.panelBox}>
+        <div style={S.panelTitle}>Share one of your decks</div>
+        <p style={S.hint}>Generate a code, send it to a friend, and they can add the whole deck — cards, tags and all — in one paste.</p>
+        {hasDecks ? (
+          <>
             <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-              <select className="sel" value={shareDeckId} onChange={(e) => { setShareDeckId(e.target.value); setShareCode(""); }}>
+              <select className="sel" value={shareDeckId} onChange={(e) => { setShareDeckId(e.target.value); setShareCode(""); setCopyMsg(""); }}>
                 {Object.values(decks).map((d) => <option key={d.id} value={d.id}>{d.name} ({d.cards.length})</option>)}
               </select>
               <button className="primary" disabled={!shareDeckId} onClick={makeCode}>Generate code</button>
@@ -6619,83 +6537,22 @@ function Worlds({ decks, log, world, onSaveWorld, onImportDeck, onShareDeck, onL
                 </div>
               </div>
             )}
-          </div>
+          </>
+        ) : (
+          <p style={{ ...S.hint, marginTop: 10 }}>You don't have any decks yet. Create one first, then come back to share it.</p>
+        )}
+      </div>
 
-          <div className="panel-box" style={S.panelBox}>
-            <div style={S.panelTitle}>Receive a deck</div>
-            <p style={S.hint}>Paste a friend's deck code to add it to your collection.</p>
-            <textarea className="ta" placeholder="Paste a KIOKU1:… deck code here" value={importCode} onChange={(e) => setImportCode(e.target.value)} rows={3} style={{ fontFamily: "monospace", fontSize: 12, marginTop: 8 }} />
-            <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
-              <button className="primary" disabled={!importCode.trim()} onClick={doImport}>Import deck</button>
-              {importMsg && <span style={{ ...S.hint, color: importMsg.startsWith("Imported") ? "var(--success-text)" : "var(--danger-text)" }}>{importMsg}</span>}
-            </div>
-          </div>
-        </>
-      )}
-
-      {tab === "friends" && (
-        <>
-          <div className="panel-box" style={S.panelBox}>
-            <div style={S.panelTitle}>Your world code</div>
-            <p style={S.hint}>Share this so friends can link with your world and compare mastery. (It's a snapshot — re-share to update it.)</p>
-            <textarea className="ta" readOnly value={myWorldCode} rows={3} style={{ fontFamily: "monospace", fontSize: 12, marginTop: 8 }} onFocus={(e) => e.target.select()} />
-            <button className="ghost" style={{ marginTop: 8 }} onClick={copyMyWorld}>Copy my world code</button>
-          </div>
-
-          <div className="panel-box" style={S.panelBox}>
-            <div style={S.panelTitle}>Link a friend's world</div>
-            <textarea className="ta" placeholder="Paste a friend's KWLD1:… world code" value={addCode} onChange={(e) => setAddCode(e.target.value)} rows={3} style={{ fontFamily: "monospace", fontSize: 12 }} />
-            <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
-              <button className="primary" disabled={!addCode.trim()} onClick={addFriend}>Link world</button>
-              {friendMsg && <span style={{ ...S.hint, color: friendMsg.includes("isn't") ? "var(--danger-text)" : "var(--success-text)" }}>{friendMsg}</span>}
-            </div>
-          </div>
-
-          {friends.length > 0 && (
-            <div className="panel-box" style={S.panelBox}>
-              <div style={S.panelTitle}>Mastery leaderboard</div>
-              {[{ name: myName, overall: me.overall, me: true }, ...friends]
-                .sort((a, b) => b.overall - a.overall)
-                .map((p, i) => (
-                  <div key={i} className="lb-row">
-                    <span className="lb-rank">{i + 1}</span>
-                    <span className="lb-name">{p.name}{p.me ? " (you)" : ""}</span>
-                    <div className="lb-bar"><div style={{ width: `${p.overall}%`, background: biomeFor(p.overall).color }} /></div>
-                    <span className="lb-pct">{p.overall}%</span>
-                  </div>
-                ))}
-            </div>
-          )}
-
-          {friends.map((f, fi) => (
-            <div key={fi} className="panel-box" style={S.panelBox}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={S.panelTitle}>{biomeFor(f.overall).emoji} {f.name}'s world — {f.overall}%</div>
-                <button className="icon danger" title="unlink" onClick={() => onSaveWorld({ ...(world || {}), name: myName, friends: friends.filter((x) => x.name !== f.name) })}>✕</button>
-              </div>
-              <div className="world-map compact">
-                {(f.regions || []).slice().sort((a, b) => a.health - b.health).map((r, ri) => {
-                  const mine = me.regions.find((m) => m.name.toLowerCase() === String(r.name).toLowerCase());
-                  const bio = biomeFor(r.health);
-                  return (
-                    <div key={ri} className="region-tile small" style={{ borderColor: bio.color }}>
-                      <div className="region-biome">{bio.emoji}</div>
-                      <div className="region-name">{r.name}</div>
-                      <div className="region-health-bar"><div style={{ width: `${r.health}%`, background: bio.color }} /></div>
-                      <div className="region-stats">
-                        <span style={{ color: bio.color, fontWeight: 700 }}>{r.health}%</span>
-                        {mine && <span style={S.hint}>you: {mine.health}%</span>}
-                      </div>
-                      {mine && mine.health < r.health - 10 && <div className="region-help">They're ahead — study to catch up!</div>}
-                      {mine && mine.health > r.health + 10 && <div className="region-help ahead">You can help repair this region 🛠️</div>}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </>
-      )}
+      <div className="panel-box" style={S.panelBox}>
+        <div style={S.panelTitle}>Receive a deck</div>
+        <p style={S.hint}>Paste a friend's deck code to add it to your collection.</p>
+        <textarea className="ta" placeholder="Paste a deck code here (starts with KIOKU…)" value={importCode} onChange={(e) => setImportCode(e.target.value)} rows={3} style={{ fontFamily: "monospace", fontSize: 12, marginTop: 8 }} />
+        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button className="primary" disabled={!importCode.trim()} onClick={doImport}>Import deck</button>
+          {importedId && <button className="ghost" onClick={() => onOpenDeck(importedId)}>Open deck →</button>}
+          {importMsg && <span style={{ ...S.hint, color: importMsg.startsWith("Imported") ? "var(--success-text)" : "var(--danger-text)" }}>{importMsg}</span>}
+        </div>
+      </div>
     </div>
   );
 }

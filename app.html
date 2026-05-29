@@ -117,6 +117,19 @@ body{
 const WORKER_URL = "https://hidden-moon-64a4.steven4team.workers.dev";   // ← your Cloudflare Worker
 
 /* ============================================================
+   STRIPE — Pro subscription ($4.99/mo)
+   The app never holds Stripe secret keys. It only asks the Worker
+   to create a Checkout Session, then redirects to Stripe's page.
+   - STRIPE_CHECKOUT_PATH: route on your Worker that creates the session
+   - To enable: deploy the Worker routes (see guide at bottom of file),
+     then this turns on automatically once WORKER_URL is real.
+   ============================================================ */
+const STRIPE_CHECKOUT_PATH = "/checkout";   // Worker route that returns { url }
+const STRIPE_PORTAL_PATH = "/portal";       // Worker route for managing/cancelling a sub
+const PRO_PRICE_LABEL = "$4.99/mo";         // display only
+const WORKER_CONFIGURED = !!WORKER_URL && !/YOUR-WORKER/.test(WORKER_URL);
+
+/* ============================================================
    SUPABASE — accounts + cloud sync
    These two values are safe to expose (the anon key is designed
    for client code; Row Level Security protects each user's rows).
@@ -1188,7 +1201,8 @@ function clozeAnswer(text)   { const n = clozeNumbers(text); return renderCloze(
    "User" without a login system = one anonymous id per browser.
    Real per-account limits across devices need real auth.
    ============================================================ */
-const DAILY_TOKEN_LIMIT = 100000; // Haiku 4.5 tokens per user per day
+const DAILY_TOKEN_LIMIT = 100000;     // Free: Haiku 4.5 tokens per user per day
+const PRO_DAILY_TOKEN_LIMIT = 1000000; // Pro: 10x higher daily AI allowance
 
 // Id sent to the Worker so it can meter tokens per user. When signed in we use
 // the real account id (so the limit follows the account across devices); when
@@ -1261,6 +1275,11 @@ const usageTracker = (function () {
       state.history[state.date] = today;
       persist(); emit();
     },
+    // raise/lower the client-side limit (e.g. when the user is Pro). The Worker
+    // remains the real enforcer; this just keeps the % bar honest before a call.
+    setLimit(limit) {
+      if (limit && !state.serverEnforced) { state.limit = limit; persist(); emit(); }
+    },
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
   };
 })();
@@ -1311,6 +1330,7 @@ const authManager = (function () {
       // first login on this account: lift any device decks into the cloud once
       try { await accountStore.seedFromLocal(); } catch (e) {}
       try { await getUserId(); } catch (e) {}
+      try { await billingManager.refresh(); } catch (e) {}
     }
     ready = true; emit();
   }
@@ -1360,6 +1380,80 @@ function useAuth() {
   return st;
 }
 
+/* ============================================================
+   BILLING — Stripe Pro subscription.
+   The plan lives in the user's synced data under the "plan" key
+   ("pro" or undefined). The Worker's webhook writes it after a
+   successful Stripe payment; the app only READS it (so a user
+   can't grant themselves Pro by editing local data — the source
+   of truth is the cloud row the webhook controls).
+   ============================================================ */
+const STRIPE_ENABLED = WORKER_CONFIGURED && SUPABASE_CONFIGURED;
+const billingManager = (function () {
+  let plan = "free";
+  const subs = new Set();
+  const emit = () => subs.forEach((fn) => { try { fn(plan); } catch (e) {} });
+
+  return {
+    isPro() { return plan === "pro"; },
+    plan() { return plan; },
+    subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
+    // Read the authoritative plan from the cloud row.
+    async refresh() {
+      const u = authManager.get().user;
+      if (!sb || !u) { plan = "free"; emit(); return plan; }
+      try {
+        const { data } = await sb.from("user_data").select("plan").eq("user_id", u.id).maybeSingle();
+        plan = (data && data.plan === "pro") ? "pro" : "free";
+      } catch (e) { /* keep last known */ }
+      try { usageTracker.setLimit(plan === "pro" ? PRO_DAILY_TOKEN_LIMIT : DAILY_TOKEN_LIMIT); } catch (e) {}
+      emit();
+      return plan;
+    },
+    // Start Stripe Checkout: ask the Worker for a session URL, then redirect.
+    async startCheckout() {
+      const u = authManager.get().user;
+      if (!u) throw new Error("Please sign in first.");
+      if (!STRIPE_ENABLED) throw new Error("Billing isn't set up yet.");
+      const res = await fetch(WORKER_URL + STRIPE_CHECKOUT_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: u.id,
+          email: u.email,
+          returnUrl: window.location.href.split("?")[0].split("#")[0],
+        }),
+      });
+      if (!res.ok) throw new Error("Couldn't start checkout. Try again.");
+      const data = await res.json();
+      if (!data || !data.url) throw new Error("Checkout unavailable right now.");
+      window.location.href = data.url; // hand off to Stripe's hosted page
+    },
+    // Open Stripe's customer portal to update card / cancel.
+    async openPortal() {
+      const u = authManager.get().user;
+      if (!u) throw new Error("Please sign in first.");
+      const res = await fetch(WORKER_URL + STRIPE_PORTAL_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: u.id, returnUrl: window.location.href.split("?")[0].split("#")[0] }),
+      });
+      if (!res.ok) throw new Error("Couldn't open the billing portal.");
+      const data = await res.json();
+      if (data && data.url) window.location.href = data.url;
+    },
+  };
+})();
+
+function useBilling() {
+  const [plan, setPlan] = useState(() => billingManager.plan());
+  useEffect(() => {
+    const unsub = billingManager.subscribe(setPlan);
+    return () => unsub();
+  }, []);
+  return { plan, isPro: plan === "pro" };
+}
+
 // Error thrown when the daily token cap is reached — callers show a friendly message.
 function DailyLimitError() {
   const e = new Error("Daily AI limit reached. It resets tomorrow.");
@@ -1375,7 +1469,6 @@ function DailyLimitError() {
    truncation detection (stop_reason === "max_tokens") still works.
 */
 const MAX_OUTPUT_TOKENS = 2867;
-const WORKER_CONFIGURED = !!WORKER_URL && !/YOUR-WORKER/.test(WORKER_URL);
 
 async function callAIDetailed(prompt, opts = {}) {
   const maxTokens = Math.min(MAX_OUTPUT_TOKENS, opts.maxTokens || MAX_OUTPUT_TOKENS);
@@ -1679,6 +1772,69 @@ function makeCards(spec) {
 
 /* =========================== APP =========================== */
 /* ---------------- ACCOUNT (login / signup / profile) ---------------- */
+function ProChip() {
+  const { isPro } = useBilling();
+  if (!isPro) return null;
+  return <span className="pro-chip" title="Kioku Pro">★ Pro</span>;
+}
+
+function ProCard() {
+  const { isPro } = useBilling();
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+
+  const go = async (which) => {
+    setErr(""); setBusy(which);
+    try {
+      if (which === "checkout") await billingManager.startCheckout();
+      else await billingManager.openPortal();
+      // (page redirects on success; if it doesn't, billing isn't wired yet)
+    } catch (e) {
+      setErr((e && e.message) || "Something went wrong.");
+      setBusy("");
+    }
+  };
+
+  if (!STRIPE_ENABLED) return null;
+
+  if (isPro) {
+    return (
+      <div className="panel-box pro-card pro-card--on" style={{ ...S.panelBox, maxWidth: 440 }}>
+        <div className="pro-badge">★ Kioku Pro</div>
+        <div style={{ fontWeight: 700, fontSize: 17, marginTop: 8 }}>You're on Pro</div>
+        <p style={{ ...S.hint, marginTop: 6, lineHeight: 1.55 }}>
+          Thanks for supporting Kioku! You have a much higher daily AI allowance and early access to new features.
+        </p>
+        <button className="ghost" style={{ marginTop: 14 }} disabled={busy === "portal"} onClick={() => go("portal")}>
+          {busy === "portal" ? "Opening…" : "Manage billing"}
+        </button>
+        {err && <div style={{ ...S.hint, color: "var(--danger-text)", marginTop: 10 }}>{err}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="panel-box pro-card" style={{ ...S.panelBox, maxWidth: 440 }}>
+      <div className="pro-badge">★ Kioku Pro</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 10 }}>
+        <span style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-.02em" }}>$4.99</span>
+        <span style={S.hint}>/month · launch price</span>
+      </div>
+      <ul className="pro-list">
+        <li>10× higher daily AI allowance</li>
+        <li>Priority generation</li>
+        <li>Unlimited PDF &amp; image imports</li>
+        <li>Early access to new features</li>
+      </ul>
+      <button className="primary" style={{ width: "100%", marginTop: 6 }} disabled={busy === "checkout"} onClick={() => go("checkout")}>
+        {busy === "checkout" ? "Starting checkout…" : "Upgrade to Pro →"}
+      </button>
+      <p style={{ ...S.hint, marginTop: 10, textAlign: "center" }}>Secure checkout via Stripe · cancel anytime</p>
+      {err && <div style={{ ...S.hint, color: "var(--danger-text)", marginTop: 10, textAlign: "center" }}>{err}</div>}
+    </div>
+  );
+}
+
 function AccountScreen({ user, onBack }) {
   const [mode, setMode] = useState("signin"); // "signin" | "signup"
   const [email, setEmail] = useState("");
@@ -1730,6 +1886,8 @@ function AccountScreen({ user, onBack }) {
           <p style={{ ...S.hint, marginTop: 14, lineHeight: 1.55 }}>Your decks, stats, and progress are saved to your account and stay in sync on every device you sign in on.</p>
           <button className="ghost" style={{ marginTop: 18 }} onClick={() => { if (confirm("Sign out of Kioku on this device?")) authManager.signOut(); }}>Sign out</button>
         </div>
+
+        <ProCard />
       </div>
     );
   }
@@ -1793,6 +1951,27 @@ function App() {
 
   // initialize auth once on mount
   useEffect(() => { authManager.init(); }, []);
+
+  // Returning from Stripe Checkout (?upgraded=1): confirm the plan from the
+  // cloud (the webhook may take a second), show a thank-you, and clean the URL.
+  useEffect(() => {
+    if (!authReady || !user) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("upgraded") === "1") {
+      let tries = 0;
+      const poll = async () => {
+        const plan = await billingManager.refresh();
+        if (plan === "pro" || tries >= 5) {
+          if (plan === "pro") { toast({ icon: "★", title: "Welcome to Pro!", body: "Your higher AI limits are active.", tone: "gold", ms: 6000 }); fireConfetti(); }
+          else toast({ icon: "⏳", title: "Almost there", body: "Payment received — Pro activates in a moment.", ms: 6000 });
+          window.history.replaceState({}, "", window.location.pathname);
+          return;
+        }
+        tries++; setTimeout(poll, 1500);
+      };
+      poll();
+    }
+  }, [authReady, user]);
 
   // AUTH GATE — an account is required to use Kioku. When auth has resolved and
   // there's no signed-in user, send them to the dedicated auth page. This is keyed
@@ -2079,6 +2258,7 @@ function App() {
             <DailyChip done={todayReviews} goal={settings.dailyGoal} />
             <LevelChip level={levelInfo.lvl} xp={levelInfo.intoLevel} next={levelInfo.levelNeeds} />
             <StreakChip streak={liveStats.streak} freezesLeft={freezesPerMonth(levelInfo.lvl) - (stats.freezesUsed || 0)} maxFreezes={freezesPerMonth(levelInfo.lvl)} />
+            {SUPABASE_ENABLED && <ProChip />}
             {SUPABASE_ENABLED && (
               <button className="icon" title={user ? (user.email || "Account") : "Account"} onClick={() => setView("account")}>👤</button>
             )}
@@ -6561,6 +6741,17 @@ const CSS = `
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); }
+
+/* ---- Kioku Pro ---- */
+.pro-card { max-width: 440px; margin-top: 14px; position: relative; overflow: hidden; border: 1px solid var(--accent); background: linear-gradient(160deg, var(--accent-bg), var(--surface) 70%); }
+.pro-card--on { background: linear-gradient(160deg, #fff6e0, var(--surface) 70%); border-color: #e8c266; }
+.pro-badge { display: inline-block; background: var(--accent); color: #fff; font-size: 12px; font-weight: 700; letter-spacing: .02em; padding: 4px 11px; border-radius: 999px; }
+.pro-card--on .pro-badge { background: linear-gradient(120deg, #e0a83a, #f0c14b); }
+.pro-list { list-style: none; padding: 0; margin: 14px 0 16px; display: grid; gap: 8px; }
+.pro-list li { position: relative; padding-left: 24px; font-size: 14.5px; color: var(--text); }
+.pro-list li::before { content: "✓"; position: absolute; left: 0; top: 0; color: var(--accent); font-weight: 700; }
+.pro-chip { display: inline-flex; align-items: center; gap: 4px; background: linear-gradient(120deg, #e0a83a, #f0c14b); color: #fff; font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 999px; box-shadow: 0 1px 4px rgba(224,168,58,.4); }
+
 .splash-spin { width: 26px; height: 26px; border-radius: 50%; border: 3px solid var(--border); border-top-color: var(--accent); margin: 0 auto; animation: splashspin .7s linear infinite; }
 @keyframes splashspin { to { transform: rotate(360deg); } }
 button { font-family: inherit; cursor: pointer; border: none; border-radius: 7px; font-size: 14px; transition: background .12s, border-color .12s, opacity .12s, color .12s; color: var(--text); }

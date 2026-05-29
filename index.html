@@ -110,8 +110,8 @@
   .demo{position:relative;z-index:1;margin:64px auto 0;max-width:560px;}
   .app-frame{background:var(--bg);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow-lg);overflow:hidden;text-align:left;}
   .app-bar{display:flex;align-items:center;gap:7px;padding:13px 16px;border-bottom:1px solid var(--line);background:var(--bg-soft);}
-  .app-bar .dot{width:11px;height:11px;border-radius:50%;}
-  .app-bar .dot.r{background:#ff5f57;}.app-bar .dot.y{background:#febc2e;}.app-bar .dot.g{background:#28c840;}
+  .app-bar .dot{width:11px;height:11px;border-radius:50%;flex:none;}
+  .app-bar .dot.d-red{background:#ff5f57;}.app-bar .dot.d-yellow{background:#febc2e;}.app-bar .dot.d-green{background:#28c840;}
   .app-bar .tt{margin-left:10px;font-size:12.5px;color:var(--ink-faint);font-weight:600;}
   .app-body{padding:26px 24px 24px;}
   .demo-meta{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--ink-faint);margin-bottom:16px;}
@@ -260,9 +260,37 @@
   .mg.a{color:#bd5247;}.mg.h{color:#9a7b35;}.mg.g{color:#3f7a5a;}.mg.e{color:var(--accent-deep);}
   /* quiz mini */
   .mini-quiz{width:100%;max-width:330px;}
+  .mq-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;}
+  .mq-tag{background:var(--accent-soft);color:var(--accent-deep);font-weight:600;font-size:12px;padding:3px 10px;border-radius:999px;}
+  .mq-timer{font-weight:700;font-size:13px;color:var(--ink-soft);font-variant-numeric:tabular-nums;}
   .mq-q{font-weight:700;font-size:16px;margin-bottom:14px;}
   .mq-opt{background:#fff;border:1px solid var(--line);border-radius:11px;padding:12px 15px;font-size:14px;margin-bottom:9px;color:var(--ink-soft);}
   .mq-opt.right{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-deep);font-weight:600;}
+  .mq-pred{margin-top:12px;text-align:center;font-size:13px;color:var(--ink-soft);}
+  .mq-pred b{color:var(--accent-deep);font-size:18px;}
+  /* lecture mini */
+  .rec-mini{background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px;width:100%;max-width:320px;box-shadow:var(--shadow-sm);}
+  .rec-mini-top{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;color:var(--ink);}
+  .rec-mini-dot{width:11px;height:11px;border-radius:50%;background:#e0584e;animation:recpulse 1.1s infinite;}
+  @keyframes recpulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+  .rec-mini-wave{display:flex;align-items:center;gap:3px;height:34px;margin:16px 0;}
+  .rec-mini-wave span{flex:1;background:var(--accent);border-radius:2px;height:30%;animation:wave 1s ease-in-out infinite;}
+  .rec-mini-wave span:nth-child(odd){animation-delay:.15s;}
+  .rec-mini-wave span:nth-child(3n){animation-delay:.3s;}
+  .rec-mini-wave span:nth-child(4n){animation-delay:.45s;}
+  @keyframes wave{0%,100%{height:25%;}50%{height:95%;}}
+  .rec-mini-txt{font-size:13px;line-height:1.55;color:var(--ink-soft);font-style:italic;}
+  .rec-mini-actions{display:flex;gap:8px;margin-top:14px;}
+  .rec-chip{background:var(--accent-soft);color:var(--accent-deep);font-weight:600;font-size:12.5px;padding:6px 12px;border-radius:9px;}
+  /* link mini */
+  .link-mini{background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px;width:100%;max-width:320px;box-shadow:var(--shadow-sm);}
+  .link-mini-bar{display:flex;align-items:center;gap:9px;background:var(--bg-soft);border:1px solid var(--line);border-radius:10px;padding:10px 13px;}
+  .link-mini-ic{font-size:15px;}
+  .link-mini-url{font-size:13px;color:var(--ink-soft);font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .link-mini-badge{margin:14px 0 12px;font-size:12.5px;font-weight:600;color:#3f7a5a;background:#eff6f2;border:1px solid #c4e0d0;border-radius:8px;padding:7px 11px;display:inline-block;}
+  .link-mini-rows{display:flex;flex-direction:column;gap:8px;}
+  .link-mini-row{font-size:14px;color:var(--ink-soft);background:var(--bg-soft);border-radius:9px;padding:9px 13px;}
+  .link-mini-row b{color:var(--accent-deep);}
   /* import mini */
   .drop-mini{background:#fff;border:1.5px dashed var(--accent);border-radius:16px;padding:30px;text-align:center;width:100%;max-width:300px;}
   .drop-ic{font-size:34px;}
@@ -451,7 +479,7 @@
     <!-- interactive product demo -->
     <div class="demo reveal">
       <div class="app-frame">
-        <div class="app-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="tt">記 Kioku — Studying</span></div>
+        <div class="app-bar"><span class="dot d-red"></span><span class="dot d-yellow"></span><span class="dot d-green"></span><span class="tt">記 Kioku — Studying</span></div>
         <div class="app-body">
           <div class="demo-meta">
             <span class="demo-pill" id="d-pill">Finance · 1 of 4</span>
@@ -476,9 +504,9 @@
             </div>
             <div class="grades" id="d-grades">
               <button class="g again" data-i="0"><div class="gl">Again</div><div class="gi" id="gi0">&lt;1m</div></button>
-              <button class="g hard" data-i="1"><div class="gl">Hard</div><div class="gi" id="gi1">2d</div></button>
-              <button class="g good" data-i="2"><div class="gl">Good</div><div class="gi" id="gi2">4d</div></button>
-              <button class="g easy" data-i="3"><div class="gl">Easy</div><div class="gi" id="gi3">9d</div></button>
+              <button class="g hard" data-i="1"><div class="gl">Hard</div><div class="gi" id="gi1">&lt;10m</div></button>
+              <button class="g good" data-i="2"><div class="gl">Good</div><div class="gi" id="gi2">1d</div></button>
+              <button class="g easy" data-i="3"><div class="gl">Easy</div><div class="gi" id="gi3">4d</div></button>
             </div>
           </div>
 
@@ -502,7 +530,7 @@
     {f:"Compound interest", b:"Interest earned on both the principal and previously accrued interest."},
     {f:"Diversification", b:"Spreading investments to reduce exposure to any single risk."}
   ];
-  var intervals=[["&lt;1m","2d","4d","9d"],["&lt;1m","1d","3d","6d"],["&lt;1m","3d","7d","15d"],["&lt;1m","2d","5d","11d"]];
+  var intervals=[["&lt;1m","&lt;10m","1d","4d"],["&lt;1m","&lt;10m","2d","5d"],["&lt;1m","1d","3d","6d"],["&lt;1m","&lt;10m","1d","3d"]];
   var i=0, flipped=false, total=deck.length;
   var flip=document.getElementById("flip"),
       front=document.getElementById("d-front"), back=document.getElementById("d-back"),
@@ -580,14 +608,29 @@
         <p>The same modern spaced-repetition algorithm power-users swear by. Kioku shows each card right before you'd forget it, so reviews stay short and retention stays high.</p>
       </div>
       <div class="feat reveal">
-        <div class="ic">📄</div>
-        <h3>Import from anything</h3>
-        <p>Turn a lecture PDF, a photo of your notes, or pasted text into a full deck. Long documents are split automatically so nothing gets dropped.</p>
+        <div class="ic">🎙️</div>
+        <h3>Record a lecture</h3>
+        <p>Hit record and Kioku transcribes your class live, word for word — then turns the transcript into a clean study guide or a ready-to-review deck.</p>
       </div>
       <div class="feat reveal">
-        <div class="ic">📝</div>
-        <h3>Exam mode</h3>
-        <p>Generate a realistic multiple-choice test from your deck with AI-written distractors, then see exactly which topics need work.</p>
+        <div class="ic">🔗</div>
+        <h3>Import from a link</h3>
+        <p>Paste a YouTube video or any web page. Kioku pulls the real transcript or article text and builds a full study pack — flashcards, a quiz, and a summary.</p>
+      </div>
+      <div class="feat reveal">
+        <div class="ic">📄</div>
+        <h3>Import from anything</h3>
+        <p>Turn a lecture PDF, a photo of your notes (OCR), or pasted text into a full deck. Long documents are split automatically so nothing gets dropped.</p>
+      </div>
+      <div class="feat reveal">
+        <div class="ic">🎓</div>
+        <h3>Adaptive exam simulator</h3>
+        <p>Full mock exams for the SAT, AP, MCAT, or your finals — timed, with difficulty that adapts to your accuracy and speed, a predicted score, and AI explanations for every miss.</p>
+      </div>
+      <div class="feat reveal">
+        <div class="ic">💬</div>
+        <h3>A tutor on every card</h3>
+        <p>Stuck? Ask for a real-world example, a simpler breakdown, an analogy, or a memory hook — without leaving your review.</p>
       </div>
       <div class="feat reveal">
         <div class="ic">🔊</div>
@@ -600,9 +643,19 @@
         <p>Write formulas in LaTeX that render beautifully, add images and hints, and tap any word for an instant AI definition while you study.</p>
       </div>
       <div class="feat reveal">
+        <div class="ic">🔄</div>
+        <h3>Share decks instantly</h3>
+        <p>Send any deck to a friend as one compact code — they paste it and the whole deck, cards and tags included, lands in their collection.</p>
+      </div>
+      <div class="feat reveal">
+        <div class="ic">📊</div>
+        <h3>Stats &amp; weak areas</h3>
+        <p>A full dashboard: a year-long activity heatmap, your review forecast, hardest cards, and your weakest decks and topics so you know exactly what to study next.</p>
+      </div>
+      <div class="feat reveal">
         <div class="ic">🔥</div>
         <h3>Streaks, XP &amp; goals</h3>
-        <p>Daily goals, levels, achievements, and streak freezes keep you coming back — with a full stats dashboard tracking your progress.</p>
+        <p>Daily goals, levels, 70+ achievements, and streak freezes keep you coming back — with cloud sync and an auto-sync toggle across every device.</p>
       </div>
     </div>
   </div>
@@ -738,7 +791,9 @@
     </div>
     <div class="tabs reveal">
       <button class="tab on" data-t="study">📚 Study</button>
-      <button class="tab" data-t="exam">📝 Exam mode</button>
+      <button class="tab" data-t="exam">🎓 Exams</button>
+      <button class="tab" data-t="lecture">🎙️ Lecture</button>
+      <button class="tab" data-t="link">🔗 Link</button>
       <button class="tab" data-t="import">📄 Import</button>
       <button class="tab" data-t="stats">📊 Stats</button>
     </div>
@@ -764,19 +819,60 @@
       <!-- EXAM -->
       <div class="panel" data-p="exam">
         <div class="panel-copy">
-          <h3>Test yourself for real</h3>
-          <p>Generate a multiple-choice exam from any deck — with AI-written distractors that are plausible, not obvious. See exactly which topics need another pass.</p>
+          <h3>Sit a full mock exam</h3>
+          <p>Pick the SAT, an AP, the MCAT, or your finals. Kioku writes a timed exam that gets harder when you're fast and accurate, eases off when you miss, and predicts your real-exam score.</p>
           <ul class="mini-list">
-            <li>Context-aware wrong answers</li><li>Instant scoring &amp; weak-topic breakdown</li><li>Timed, exam-day feel</li>
+            <li>Adaptive difficulty &amp; live timer</li><li>Predicted score on the real scale</li><li>AI explanation for every wrong answer</li>
           </ul>
         </div>
         <div class="panel-vis">
           <div class="mini-quiz">
+            <div class="mq-head"><span class="mq-tag">MCAT · adaptive</span><span class="mq-timer">⏱ 18:24</span></div>
             <div class="mq-q">Which lever is <b>monetary</b> policy?</div>
             <div class="mq-opt">Raising income tax rates</div>
             <div class="mq-opt right">Lowering the federal funds rate ✓</div>
             <div class="mq-opt">Increasing public spending</div>
             <div class="mq-opt">Issuing more Treasury bonds</div>
+            <div class="mq-pred">Predicted score · <b>512</b></div>
+          </div>
+        </div>
+      </div>
+      <!-- LECTURE -->
+      <div class="panel" data-p="lecture">
+        <div class="panel-copy">
+          <h3>Record class, get study material</h3>
+          <p>Hit record and Kioku writes down every word live. When the lecture ends, turn the transcript into a clean study guide or a ready-to-review deck in one tap.</p>
+          <ul class="mini-list">
+            <li>Live, word-for-word transcription</li><li>One transcript → guide or flashcards</li><li>Edit the text before you generate</li>
+          </ul>
+        </div>
+        <div class="panel-vis">
+          <div class="rec-mini">
+            <div class="rec-mini-top"><span class="rec-mini-dot"></span> Recording · 12:47</div>
+            <div class="rec-mini-wave"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+            <div class="rec-mini-txt">“…so the mitochondria is the site of oxidative phosphorylation, where the electron transport chain generates ATP…”</div>
+            <div class="rec-mini-actions"><span class="rec-chip">📝 Study guide</span><span class="rec-chip">🃏 Flashcards</span></div>
+          </div>
+        </div>
+      </div>
+      <!-- LINK -->
+      <div class="panel" data-p="link">
+        <div class="panel-copy">
+          <h3>Turn a video or page into a deck</h3>
+          <p>Paste a YouTube link or any article. Kioku pulls the real transcript or page text — not a guess — and builds flashcards, a quiz, and a summary you can save.</p>
+          <ul class="mini-list">
+            <li>Reads real transcripts &amp; article text</li><li>Flashcards + comprehension quiz</li><li>Plain-English summary &amp; key topics</li>
+          </ul>
+        </div>
+        <div class="panel-vis">
+          <div class="link-mini">
+            <div class="link-mini-bar"><span class="link-mini-ic">🔗</span><span class="link-mini-url">youtube.com/watch?v=…</span></div>
+            <div class="link-mini-badge">✓ Built from the actual transcript</div>
+            <div class="link-mini-rows">
+              <div class="link-mini-row"><b>18</b> flashcards</div>
+              <div class="link-mini-row"><b>5</b>-question quiz</div>
+              <div class="link-mini-row"><b>1</b> summary + key topics</div>
+            </div>
           </div>
         </div>
       </div>
@@ -909,7 +1005,19 @@
       </details>
       <details class="faq-item">
         <summary class="faq-q">Where do my cards come from? <span class="plus">+</span></summary>
-        <div class="faq-a">However you like: describe a topic and let the AI build a deck, paste in your own notes, upload a PDF or photo to import, or write cards by hand. You can always edit anything before saving.</div>
+        <div class="faq-a">However you like: describe a topic and let the AI build a deck, paste your own notes, upload a PDF or photo, record a lecture, or paste a YouTube/website link — Kioku turns any of them into cards. You can always edit anything before saving, or write cards by hand.</div>
+      </details>
+      <details class="faq-item">
+        <summary class="faq-q">Can it really transcribe a lecture? <span class="plus">+</span></summary>
+        <div class="faq-a">Yes. The lecture recorder uses your browser's speech recognition to write down a class live, word for word, then turns the transcript into a study guide or a deck. It works best in Chrome on desktop or Android.</div>
+      </details>
+      <details class="faq-item">
+        <summary class="faq-q">What can the exam simulator do? <span class="plus">+</span></summary>
+        <div class="faq-a">Pick the SAT, an AP exam, the MCAT, or your finals and Kioku generates a timed mock exam. Difficulty adapts to your accuracy and speed, you get a predicted score on the real scale, a per-topic breakdown, and an AI explanation for every question you miss.</div>
+      </details>
+      <details class="faq-item">
+        <summary class="faq-q">Can I share decks with friends? <span class="plus">+</span></summary>
+        <div class="faq-a">Yes — any deck becomes a single compact code. Send it to a friend, they paste it in, and the whole deck (cards and tags included) is added to their collection instantly.</div>
       </details>
       <details class="faq-item">
         <summary class="faq-q">Will my decks sync across devices? <span class="plus">+</span></summary>
@@ -944,10 +1052,10 @@
         <ul class="price-list">
           <li>✓ Unlimited decks &amp; cards</li>
           <li>✓ FSRS-5 spaced repetition</li>
-          <li>✓ AI deck generation (daily allowance)</li>
+          <li>✓ AI generation, lecture &amp; link import</li>
           <li>✓ PDF / image / text import</li>
-          <li>✓ Exam mode &amp; stats dashboard</li>
-          <li>✓ Cloud sync across devices</li>
+          <li>✓ Adaptive exam simulator &amp; stats</li>
+          <li>✓ Deck sharing &amp; cloud sync</li>
         </ul>
         <a href="auth.html?mode=signup" class="btn btn-dark" style="width:100%;margin-top:8px;">Get started free</a>
       </div>
@@ -1093,11 +1201,28 @@
   // scroll reveal
   const io = new IntersectionObserver((entries) => {
     entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } });
-  }, { threshold: .12 });
-  document.querySelectorAll(".reveal").forEach((el, i) => {
+  }, { threshold: .12, rootMargin: "0px 0px -5% 0px" });
+  const revealEls = document.querySelectorAll(".reveal");
+  revealEls.forEach((el, i) => {
     el.style.transitionDelay = (i % 4) * 60 + "ms";
     io.observe(el);
   });
+  // Robustness fallback: if anything is already within the viewport (fast scroll,
+  // restored scroll position, or a missed observer callback), reveal it. Also a
+  // final safety net so no section can ever stay permanently invisible.
+  const revealInView = () => {
+    document.querySelectorAll(".reveal:not(.in)").forEach((el) => {
+      const r = el.getBoundingClientRect();
+      if (r.top < window.innerHeight * 0.92 && r.bottom > 0) { el.classList.add("in"); io.unobserve(el); }
+    });
+  };
+  window.addEventListener("scroll", revealInView, { passive: true });
+  window.addEventListener("resize", revealInView);
+  revealInView();
+  setTimeout(() => document.querySelectorAll(".reveal:not(.in)").forEach((el) => {
+    const r = el.getBoundingClientRect();
+    if (r.top < window.innerHeight) el.classList.add("in");
+  }), 1500);
 </script>
 </body>
 </html>

@@ -5610,7 +5610,7 @@ function LectureRecorder({ onSave, onCancel }) {
       if (ev.error === "not-allowed" || ev.error === "service-not-allowed" || ev.error === "audio-capture") {
         setError(ev.error === "audio-capture"
           ? "No microphone was found. Check your device's mic and try again."
-          : "Microphone access was blocked. Allow the mic and try again.");
+          : "Mic access was blocked. Tap Allow, then press Start again. On iPhone, also check Settings → Safari → Microphone is set to Allow.");
         wantOnRef.current = false; setRecording(false); pauseTimer(); releaseWake();
       }
       // "no-speech"/"aborted"/"network" are transient — onend recreates the recognizer if wanted
@@ -5640,19 +5640,14 @@ function LectureRecorder({ onSave, onCancel }) {
   async function startRec() {
     setError("");
     if (!supported) { setError("Live transcription isn't supported in this browser. Try Chrome on desktop or Android."); return; }
-    try {
-      // prompt for mic permission up front for a clear UX
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-        s.getTracks().forEach((t) => t.stop());
-      }
-    } catch (e) {
-      setError("Microphone access was blocked. Allow the mic and try again."); return;
-    }
+    // iOS Safari is strict: SpeechRecognition.start() must run synchronously inside the tap.
+    // Any await first (like a getUserMedia pre-prompt) breaks the user-gesture chain, so iOS
+    // throws "not-allowed" even right after you tap Allow. So start the recognizer FIRST — it
+    // triggers the mic permission prompt on its own — and fire the wake lock right after.
     wantOnRef.current = true;
-    acquireWake();
     startSession();
     setRecording(true); setPaused(false); startTimer();
+    acquireWake();
   }
 
   function pauseRec() {

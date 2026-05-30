@@ -5615,13 +5615,20 @@ function LectureRecorder({ onSave, onCancel }) {
       setInterim(interimStr);
     };
     r.onerror = (ev) => {
-      if (ev.error === "not-allowed" || ev.error === "service-not-allowed" || ev.error === "audio-capture") {
-        setError(ev.error === "audio-capture"
-          ? "No microphone was found. Check your device's mic and try again."
-          : "Mic access was blocked. Tap Allow, then press Start again. On iPhone, also check Settings → Safari → Microphone is set to Allow.");
-        wantOnRef.current = false; setRecording(false); pauseTimer(); releaseWake();
+      const fatal = ev.error === "not-allowed" || ev.error === "service-not-allowed" || ev.error === "audio-capture";
+      if (!fatal) return; // no-speech / aborted / network are transient — onend restarts if wanted
+      let msg;
+      if (ev.error === "audio-capture") {
+        msg = "No microphone was found. Check your device's mic and try again.";
+      } else if (IS_IOS) {
+        // On iOS, an instant rejection with no prompt almost always means Dictation is OFF —
+        // iOS refuses speech recognition at the system level before it ever asks for the mic.
+        msg = "iPhone blocked live transcription. Most likely Dictation is off — turn it on: Settings → General → Keyboard → Enable Dictation. Then come back and tap Start. If it still fails, open kioku.cards in Safari itself (not the home-screen app) and allow the mic for the site.";
+      } else {
+        msg = "Mic access was blocked. Allow the microphone, then press Start again.";
       }
-      // "no-speech"/"aborted"/"network" are transient — onend recreates the recognizer if wanted
+      setError(msg);
+      wantOnRef.current = false; setRecording(false); pauseTimer(); releaseWake();
     };
     r.onend = () => {
       // iOS sometimes ends a phrase without ever marking it final (it throttles to the cloud
@@ -5819,7 +5826,7 @@ Transcript:
       <p style={S.sub}>Kioku listens and writes down every word live. When you're done, turn the transcript into a study guide or flashcards.</p>
 
       {!supported && <div style={S.errorBox}>Live transcription needs the Web Speech API — it works in Chrome (desktop &amp; Android) and Edge. On unsupported browsers you can still paste notes via “From notes / PDF”.</div>}
-      {IS_IOS && supported && <div style={S.hint}>📱 On iPhone: open this in <b>Safari</b> (not the home-screen app), make sure <b>Settings → General → Keyboard → Enable Dictation</b> is on, and pause briefly between sentences so each phrase gets captured.</div>}
+      {IS_IOS && supported && <div style={S.hint}>📱 <b>iPhone setup:</b> 1) Settings → General → Keyboard → turn on <b>Enable Dictation</b> (required — iOS blocks transcription without it). 2) Use <b>Safari</b>, not the home-screen app. 3) Pause briefly between sentences so each phrase is captured.</div>}
       {!WORKER_CONFIGURED && <div style={S.errorBox}>AI isn't connected. Set your Worker URL to turn transcripts into study material.</div>}
       {error && <div style={S.errorBox}>{error}</div>}
 

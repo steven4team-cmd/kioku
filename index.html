@@ -34,6 +34,7 @@
     --accent-deep:#2d6aa3;
     --accent-soft:#eef4fa;
     --orange:#e3742f;
+    --danger:#c0564b;
     --radius:16px;
     --radius-lg:22px;
     --shadow-sm:0 1px 2px rgba(20,30,45,.05);
@@ -117,7 +118,8 @@
   .demo-meta{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--ink-faint);margin-bottom:16px;}
   .demo-pill{background:var(--accent-soft);color:var(--accent-deep);padding:3px 10px;border-radius:999px;font-weight:600;}
   /* flip card */
-  .flip{perspective:1400px;cursor:pointer;margin-bottom:18px;}
+  .flip{perspective:1400px;cursor:pointer;margin-bottom:18px;border-radius:16px;}
+  .flip:focus-visible{outline:3px solid var(--accent);outline-offset:3px;}
   .flip-in{position:relative;width:100%;min-height:178px;transition:transform .6s cubic-bezier(.4,.2,.2,1);transform-style:preserve-3d;}
   .flip.flipped .flip-in{transform:rotateY(180deg);}
   .face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;border:1px solid var(--line);border-radius:16px;background:linear-gradient(180deg,#fff,#fbfcfe);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:26px;box-shadow:var(--shadow-sm);}
@@ -158,6 +160,7 @@
 
   /* ---------- section heading ---------- */
   section{position:relative;}
+  section[id]{scroll-margin-top:88px;} /* keep anchored headings clear of the sticky nav */
   .sec-tag{color:var(--accent);font-weight:700;font-size:13px;letter-spacing:.12em;text-transform:uppercase;}
   .sec-head{font-family:var(--serif);font-weight:600;font-size:clamp(28px,4.5vw,46px);line-height:1.1;letter-spacing:-.02em;margin-top:14px;}
   .sec-head .muted{color:var(--ink-faint);}
@@ -488,7 +491,7 @@
           <div class="d-progress"><div class="d-progress-fill" id="d-prog"></div></div>
 
           <div id="d-study">
-            <div class="flip" id="flip">
+            <div class="flip" id="flip" role="button" tabindex="0" aria-label="Flashcard — press to flip">
               <div class="flip-in">
                 <div class="face front">
                   <div class="lbl">QUESTION</div>
@@ -544,8 +547,13 @@
     for(var k=0;k<4;k++){document.getElementById("gi"+k).innerHTML=intervals[i][k];}
     flipped=false; flip.classList.remove("flipped");
   }
-  flip.addEventListener("click",function(){ flipped=!flipped; flip.classList.toggle("flipped",flipped);
+  function toggleFlip(){
+    flipped=!flipped; flip.classList.toggle("flipped",flipped);
     if(flipped) cap.textContent="↑ Now pick how well you knew it.";
+  }
+  flip.addEventListener("click", toggleFlip);
+  flip.addEventListener("keydown", function(e){
+    if(e.key===" "||e.key==="Enter"){ e.preventDefault(); toggleFlip(); }
   });
   document.getElementById("d-grades").addEventListener("click",function(e){
     var btn=e.target.closest(".g"); if(!btn) return;
@@ -610,7 +618,7 @@
       <div class="feat reveal">
         <div class="ic">🎙️</div>
         <h3>Record a lecture</h3>
-        <p>Hit record and Kioku transcribes your class live, word for word — then turns the transcript into a clean study guide or a ready-to-review deck.</p>
+        <p>Hit record and Kioku captures your class, transcribes it accurately, and turns the transcript into a clean study guide or a ready-to-review deck — and it works right on your phone, including iPhone.</p>
       </div>
       <div class="feat reveal">
         <div class="ic">🔗</div>
@@ -620,7 +628,7 @@
       <div class="feat reveal">
         <div class="ic">📄</div>
         <h3>Import from anything</h3>
-        <p>Turn a lecture PDF, a photo of your notes (OCR), or pasted text into a full deck. Long documents are split automatically so nothing gets dropped.</p>
+        <p>Turn a lecture PDF, a photo of your notes (OCR), or pasted text into a full deck — or bring existing cards straight in from a CSV or text file. Long documents are split automatically so nothing gets dropped.</p>
       </div>
       <div class="feat reveal">
         <div class="ic">🎓</div>
@@ -841,9 +849,9 @@
       <div class="panel" data-p="lecture">
         <div class="panel-copy">
           <h3>Record class, get study material</h3>
-          <p>Hit record and Kioku writes down every word live. When the lecture ends, turn the transcript into a clean study guide or a ready-to-review deck in one tap.</p>
+          <p>Hit record and Kioku captures your lecture and transcribes it for you. When the class ends, turn the transcript into a clean study guide or a ready-to-review deck in one tap.</p>
           <ul class="mini-list">
-            <li>Live, word-for-word transcription</li><li>One transcript → guide or flashcards</li><li>Edit the text before you generate</li>
+            <li>Accurate transcription — works on iPhone too</li><li>One transcript → guide or flashcards</li><li>Edit the text before you generate</li>
           </ul>
         </div>
         <div class="panel-vis">
@@ -880,9 +888,9 @@
       <div class="panel" data-p="import">
         <div class="panel-copy">
           <h3>Bring your own material</h3>
-          <p>Drop in a lecture PDF, a photo of handwritten notes, or pasted text. Kioku reads it, splits long documents, and drafts a deck you can edit.</p>
+          <p>Drop in a lecture PDF, a photo of handwritten notes, or pasted text and Kioku drafts a deck you can edit. Already have cards elsewhere? Import them straight from a CSV or text file.</p>
           <ul class="mini-list">
-            <li>PDF, image (OCR) &amp; plain text</li><li>Long docs chunked automatically</li><li>Review the draft before saving</li>
+            <li>PDF, image (OCR) &amp; plain text</li><li>Import existing cards from CSV / text</li><li>Long docs chunked automatically</li>
           </ul>
         </div>
         <div class="panel-vis">
@@ -954,7 +962,6 @@
     </div>
     <div class="t-grid">
       <div class="t-card reveal">
-        <div class="stars">★★★★★</div>
         <p>Spaced repetition is the most well-studied learning technique there is. Kioku schedules every card with FSRS-5 so you spend your time on what you're about to forget — not what you already know.</p>
         <div class="t-top" style="margin-top:14px;margin-bottom:0;"><div class="t-ava">⏱</div><div><div class="t-name">Spaced repetition</div><div class="t-handle">remember more, review less</div></div></div>
       </div>
@@ -1005,11 +1012,11 @@
       </details>
       <details class="faq-item">
         <summary class="faq-q">Where do my cards come from? <span class="plus">+</span></summary>
-        <div class="faq-a">However you like: describe a topic and let the AI build a deck, paste your own notes, upload a PDF or photo, record a lecture, or paste a YouTube/website link — Kioku turns any of them into cards. You can always edit anything before saving, or write cards by hand.</div>
+        <div class="faq-a">However you like: describe a topic and let the AI build a deck, paste your own notes, upload a PDF or photo, record a lecture, paste a YouTube/website link, or import a CSV of existing cards — Kioku turns any of them into cards. You can always edit anything before saving, or write cards by hand.</div>
       </details>
       <details class="faq-item">
         <summary class="faq-q">Can it really transcribe a lecture? <span class="plus">+</span></summary>
-        <div class="faq-a">Yes. The lecture recorder uses your browser's speech recognition to write down a class live, word for word, then turns the transcript into a study guide or a deck. It works best in Chrome on desktop or Android.</div>
+        <div class="faq-a">Yes. The lecture recorder captures your class and transcribes it for you, then turns the transcript into a study guide or a deck. Because it records the audio and transcribes it on our servers, it works on any modern browser — including Safari on iPhone.</div>
       </details>
       <details class="faq-item">
         <summary class="faq-q">What can the exam simulator do? <span class="plus">+</span></summary>
@@ -1035,7 +1042,6 @@
   </div>
 </section>
 
-<!-- ===================== CTA ===================== -->
 <!-- ===================== PRICING ===================== -->
 <section class="pricing" id="pricing">
   <div class="wrap">
@@ -1053,7 +1059,7 @@
           <li>✓ Unlimited decks &amp; cards</li>
           <li>✓ FSRS-5 spaced repetition</li>
           <li>✓ AI generation, lecture &amp; link import</li>
-          <li>✓ PDF / image / text import</li>
+          <li>✓ PDF / image / text / CSV import</li>
           <li>✓ Adaptive exam simulator &amp; stats</li>
           <li>✓ Deck sharing &amp; cloud sync</li>
         </ul>
@@ -1067,7 +1073,7 @@
           <span class="price-now">$4.99</span>
           <span class="price-per">/month</span>
         </div>
-        <p class="price-desc"><b>80% off</b> while we're in early access — locked in for life.</p>
+        <p class="price-desc"><b>80% off</b> while we're in early access — lock in this price.</p>
         <ul class="price-list">
           <li>✓ Everything in Free</li>
           <li>✓ Much higher daily AI allowance</li>
@@ -1081,6 +1087,7 @@
   </div>
 </section>
 
+<!-- ===================== CTA ===================== -->
 <section class="cta">
   <div class="wrap">
     <div class="cta-box reveal">
